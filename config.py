@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from dotenv import load_dotenv
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,11 +20,11 @@ class Settings(BaseSettings):
     """
 
     # Telegram
-    tg_api_id: int = 0
-    tg_api_hash: str = ""
-    tg_phone: str = ""
-    tg_bot_token: str = ""
-    tg_proxy_url: Optional[str] = None
+    tg_api_id: int = Field(0, validation_alias="TG_API_ID")
+    tg_api_hash: str = Field("", validation_alias="TG_API_HASH")
+    tg_phone: str = Field("", validation_alias="TG_PHONE")
+    tg_bot_token: str = Field("", validation_alias="TG_BOT_TOKEN")
+    tg_proxy_url: Optional[str] = Field(None, validation_alias="TG_PROXY_URL")
 
     # Data
     tg_data_dir: str = "./data"

@@ -52,6 +52,45 @@ class TestTelegramServiceInit:
 
 
 @pytest.mark.asyncio
+class TestTelegramServiceFromSettings:
+    """Tests for TelegramService creation from Settings config."""
+
+    async def test_service_creation_from_settings_with_proxy(self, db_session):
+        """🔴 Test TelegramService created from Settings with proxy_url."""
+        from config import Settings
+        from services.telegram_client import TelegramService
+
+        settings = Settings()
+        service = TelegramService(
+            api_id=settings.tg_api_id,
+            api_hash=settings.tg_api_hash,
+            phone=settings.tg_phone or None,
+            bot_token=settings.tg_bot_token or None,
+            proxy_url=settings.tg_proxy_url,
+        )
+        assert service.api_id == settings.tg_api_id
+        assert service.api_hash == settings.tg_api_hash
+        # proxy should be set because .env has TG_PROXY_URL=socks5://127.0.0.1:1080
+        assert service.proxy is not None, "Proxy should be set from Settings"
+
+    async def test_service_creation_from_settings_no_proxy(self, monkeypatch, db_session):
+        """🔴 Test TelegramService created from Settings without proxy."""
+        monkeypatch.setenv("TG_PROXY_URL", "")
+        from config import Settings
+        from services.telegram_client import TelegramService
+
+        settings = Settings()
+        service = TelegramService(
+            api_id=settings.tg_api_id,
+            api_hash=settings.tg_api_hash,
+            phone=settings.tg_phone or None,
+            bot_token=settings.tg_bot_token or None,
+            proxy_url=settings.tg_proxy_url,
+        )
+        assert service.proxy is None, "Proxy should be None when TG_PROXY_URL is empty"
+
+
+@pytest.mark.asyncio
 class TestTelegramServiceAuthState:
     """Tests for auth state management."""
 

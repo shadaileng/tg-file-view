@@ -16,10 +16,22 @@ async def lifespan(app: FastAPI):
     await init_db()
     # Seed config from .env
     from database import AsyncSessionLocal
-    from config import ensure_initialized
+    from config import ensure_initialized, Settings
+    from services.telegram_client import TelegramService, set_telegram_service
 
     async with AsyncSessionLocal() as session:
         await ensure_initialized(session)
+
+    # Initialize TelegramService with proxy from settings
+    settings = Settings()
+    tg_service = TelegramService(
+        api_id=settings.tg_api_id,
+        api_hash=settings.tg_api_hash,
+        phone=settings.tg_phone or None,
+        bot_token=settings.tg_bot_token or None,
+        proxy_url=settings.tg_proxy_url,
+    )
+    set_telegram_service(tg_service)
 
     yield
     # Shutdown

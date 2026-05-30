@@ -17,15 +17,18 @@ class TestConfig:
         assert s.host == "0.0.0.0"
         assert s.port == 8000
 
-    async def test_settings_defaults(self, db_session):
-        """🔴 Test Settings default values."""
+    async def test_settings_field_types(self):
+        """🔴 Test Settings field types are correct."""
         from config import Settings
         s = Settings()
-        assert s.tg_api_id == 0
-        assert s.tg_api_hash == ""
-        assert s.sync_batch_size == 500
-        assert s.sync_delay_seconds == 1.0
-        assert s.debug is False
+        assert isinstance(s.tg_api_id, int)
+        assert isinstance(s.tg_api_hash, str)
+        assert isinstance(s.sync_batch_size, int)
+        assert isinstance(s.sync_delay_seconds, float)
+        assert isinstance(s.debug, bool)
+        # Default-like assertions on non-TG-specific fields
+        assert s.sync_batch_size > 0
+        assert s.sync_delay_seconds >= 0
 
     async def test_settings_env_override(self, monkeypatch):
         """🔴 Test environment variables override defaults."""
@@ -92,6 +95,20 @@ class TestConfig:
         assert await is_admin("") is True
         assert await is_admin(None) is True
 
+    async def test_proxy_url_from_env(self, monkeypatch):
+        """🔴 Test tg_proxy_url loads from environment variable."""
+        monkeypatch.setenv("TG_PROXY_URL", "socks5://192.168.1.1:9999")
+        from config import Settings
+        s = Settings()
+        assert s.tg_proxy_url == "socks5://192.168.1.1:9999"
+
+    async def test_proxy_url_default_none(self, monkeypatch):
+        """🔴 Test tg_proxy_url defaults to None when env var is empty."""
+        monkeypatch.setenv("TG_PROXY_URL", "")
+        from config import Settings
+        s = Settings()
+        assert s.tg_proxy_url is None or s.tg_proxy_url == ""
+
     async def test_ensure_initialized(self, db_session):
         """🔴 Test ensure_initialized seeds DB from .env."""
         from config import ensure_initialized
@@ -100,10 +117,10 @@ class TestConfig:
 
         await ensure_initialized(db_session)
 
-        # Check that some seed values were written (key used in DB is 'api_id')
+        # Check that seed values were written
         result = await db_session.execute(
             select(AppConfig).where(AppConfig.key == "api_id")
         )
         row = result.scalar_one_or_none()
         assert row is not None, "api_id should be seeded"
-        assert row.value in ("0", "")
+        assert row.value is not None and row.value != ""

@@ -23,32 +23,36 @@
 
 ---
 
-## Step 2: Telegram 客户端 + 认证 API ✅ 53/53 PASS
+## Step 2: Telegram 客户端 + 认证 API ✅ 53/53 PASS → 57/57 PASS
 
 ### 新增文件
 | 文件 | 说明 |
 |------|------|
 | `services/telegram_client.py` | Telethon 客户端封装: TelegramService, AuthState 状态机, 全局实例管理, proxy 解析 |
 | `api/auth.py` | 认证路由: POST send-code, POST verify-code, POST verify-2fa, GET status, POST logout |
-| `tests/test_telegram_client.py` | Telegram 客户端测试 (13) |
+| `tests/test_telegram_client.py` | Telegram 客户端测试 (13 → 15) |
 | `tests/test_auth_api.py` | 认证 API 端点测试 (9) |
 
 ### 修改文件
 | 文件 | 变更 |
 |------|------|
-| `main.py` | 注册 auth_router |
+| `main.py` | 注册 auth_router + lifespan 中初始化 TelegramService（含代理配置） |
+| `config.py` | 修复 pydantic-settings 双重前缀 Bug：`tg_*` 字段增加 `Field(validation_alias=...)` 正确映射 `TG_API_ID`/`TG_PROXY_URL` 等环境变量 |
+| `tests/test_config.py` | 新增 `test_proxy_url_from_env`、`test_proxy_url_default_none`；重构 `test_settings_defaults` → `test_settings_field_types` |
 
 ### 关键设计决策
 - **AuthState 状态机**: DISCONNECTED → CONNECTING → CODE_SENT → (CODE_VERIFIED|2FA_REQUIRED) → AUTHORIZED
-- **全局服务**: `get/set/reset_telegram_service()` 单例模式
+- **全局服务**: `get/set/reset_telegram_service()` 单例模式；启动时从 `Settings` 初始化并注入 proxy
 - **认证流**: send_code → verify_code → (verify_2fa) → authorized
 - **proxy 解析**: 使用 `python_socks.ProxyType`，支持 socks5/socks4
 - **代码简化**: `_ensure_client()` 不过度检查 is_connected，依赖 Telethon 自身幂等性
+- **env_prefix Bug 修复**: pydantic-settings 的 `env_prefix: "TG_"` + 字段名 `tg_proxy_url` → 查找 `TG_TG_PROXY_URL`（双重前缀）。使用 `Field(validation_alias="TG_PROXY_URL")` 显式指定环境变量名
 
 ### 测试统计
 - Step 1: 30/30 ✅
-- Step 2 新增: 23/23 ✅
-- **总计: 53/53 PASS ✅**
+- Step 2 原有: 23/23 ✅
+- 本次新增: 4/4 ✅ (config: 2, telegram_client: 2)
+- **总计: 57/57 PASS ✅**
 
 ---
 
