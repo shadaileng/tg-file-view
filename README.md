@@ -2,7 +2,7 @@
 
 > 单体 Telegram 频道文件预览服务 — 替代三服务架构，整合文件同步、预览、缩略图生成、缓存管理。
 
-[![Tests](https://img.shields.io/badge/tests-53/53%20PASS-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-70/70%20PASS-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -49,6 +49,7 @@
 | Telegram | Telethon 1.32+ | cryptg 加密加速 |
 | 数据库 | SQLAlchemy 2.0 + aiosqlite | — |
 | 配置 | pydantic-settings + python-dotenv | — |
+| 日志 | loguru 0.7+ | 控制台彩色 + 文件轮转 |
 | 图片处理 | Pillow 10+ | — |
 | 代理 | python-socks 2.0+ | socks5/socks4 |
 | 前端 | Vue 3 + Vite + Tailwind | pnpm |
@@ -66,9 +67,13 @@ tg_file_viewer/
 ├── config.py               # Settings + DB 动态配置 (DB > env > default)
 ├── database.py             # 异步 SQLite 引擎 + 会话管理
 ├── models.py               # 5 张 ORM 表 (channels/files/sync_tasks/thumb_jobs/app_config)
+├── logging_config.py       # loguru 日志配置 (控制台 + 文件轮转)
 ├── pyproject.toml          # uv 项目配置
 ├── .env.example            # 环境变量模板
 │
+├── middleware/              # 中间件
+│   ├── __init__.py
+│   └── logging.py          # 请求日志中间件
 ├── api/                    # API 路由层
 │   ├── __init__.py
 │   ├── auth.py             # 认证路由 (已实现 ✅)
@@ -92,8 +97,9 @@ tg_file_viewer/
 │   ├── test_database.py    # DB 测试 (8)
 │   ├── test_config.py      # 配置测试 (10)
 │   ├── test_models.py      # 模型测试 (12)
-│   ├── test_telegram_client.py  # Telegram 客户端测试 (13)
-│   └── test_auth_api.py    # 认证 API 测试 (9)
+│   ├── test_telegram_client.py  # Telegram 客户端测试 (15)
+│   ├── test_auth_api.py    # 认证 API 测试 (9)
+│   └── test_logging.py     # 日志系统测试 (13)
 │
 ├── data/                   # 运行时数据
 │   ├── db.sqlite           # SQLite 数据库
@@ -229,7 +235,7 @@ AppConfig  — key-value 动态配置
 | Step 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ 待实施 |
 | Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ⏳ 待实施 |
 
-**当前进度**: 2/10 步完成，53 个测试全部通过。
+**当前进度**: 2/10 步完成，70 个测试全部通过。
 
 ---
 
@@ -303,7 +309,7 @@ uv run pytest tests/test_auth_api.py -v
 uv run pytest tests/ --cov=. --cov-report=term
 
 # 当前测试统计
-# ✅ 53/53 PASS (Step 1: 30 + Step 2: 23)
+# ✅ 70/70 PASS (Step 1: 30 + Step 2: 27 + Step 2.5: 13)
 ```
 
 测试采用 **pytest + pytest-asyncio**，测试数据库与生产隔离：
@@ -318,8 +324,11 @@ uv run pytest tests/ --cov=. --cov-report=term
 ### 本地运行
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+cd tg_file_viewer
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+> 注意：必须使用 `uv run` 启动以确保虚拟环境和依赖正确加载。启动时自动初始化数据库（`data/db.sqlite`），所有表由 `models.py` 注册。
 
 ### Docker（待实现）
 

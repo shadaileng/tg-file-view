@@ -71,3 +71,63 @@
 
 ### 测试统计
 - 53/53 PASS ✅ (无代码变动)
+
+---
+
+## Step 2.5: 日志子系统 — loguru 统一日志管理 ✅ 70/70 PASS
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `logging_config.py` | 集中日志配置: loguru 初始化、控制台彩色输出、文件轮转 (10MB×5)、错误日志分离、第三方库静默 |
+| `middleware/__init__.py` | 中间件包 |
+| `middleware/logging.py` | HTTP 请求日志中间件: 记录 method + path + status + 耗时(ms) |
+| `tests/test_logging.py` | 日志系统测试 (13): setup_logging、中间件、Settings 日志字段 |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `pyproject.toml` | 添加 `loguru>=0.7` 依赖 |
+| `config.py` | 新增 4 个日志配置字段: TG_LOG_LEVEL/LOG_FILE/LOG_ROTATION/LOG_RETENTION; ensure_initialized 添加 seed 数量日志 |
+| `main.py` | 启动时 `setup_logging()`; 全链路 lifespan 日志; 注册请求日志中间件; `import os` 提前 |
+| `database.py` | `init_db` 添加成功/失败日志 |
+| `api/auth.py` | `import logging` → `from loguru import logger` |
+| `services/telegram_client.py` | `import logging` → `from loguru import logger` |
+| `.env` / `.env.example` | 新增 4 个日志配置环境变量 |
+| `README.md` | 更新测试统计、目录结构、环境变量表 |
+| `AGENT.md` | 更新目录结构、快速命令 |
+
+### 关键设计决策
+- **loguru 替代标准 logging**: 代码量减少约 40%，一行 `from loguru import logger` 替代 `logging.getLogger(__name__)`
+- **双输出**: 控制台 (INFO+, 彩色) + 文件 (DEBUG+, 轮转) + 错误文件 (ERROR+, 独立)
+- **轮转策略**: 10MB 单文件轮转，保留 5 个备份
+- **第三方静默**: telethon/httpx/httpcore/asyncio/aiosqlite 自动设为 WARNING
+- **请求日志中间件**: 每个 HTTP 请求记录 method/path/status/耗时
+
+### 测试统计
+- Step 1: 30/30 ✅
+- Step 2: 27/27 ✅
+- Step 2.5 (日志): 13/13 ✅
+- **总计: 70/70 PASS ✅**
+
+---
+
+## Fix: 配置管理与数据库初始化修复
+
+### 问题
+- `main.py` 中混用 `os.environ.get()` 和 `settings` 对象读取配置，不一致
+- `database.py` 模块级代码在 `.env` 加载前执行，导致 `DB_PATH` 使用了默认值而非 `.env` 中的值
+- `init_db()` 调用时 `models.py` 未被导入，`Base.metadata` 不包含 ORM 模型，导致 `app_config` 等表未被创建
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 1) 调整导入顺序：`from config import Settings` 移到 `from database import init_db` 之前；2) `os.environ.get("TG_DB_PATH")` → `settings.tg_db_path`；3) `os.environ.get("TG_DATA_DIR")` → `settings.tg_data_dir`；4) 移除无用的 `import os`；5) `init_db()` 前添加 `import models` 注册所有 ORM 模型 |
+
+### 关键设计决策
+- **单一配置源**: 所有配置读取统一通过 `Settings` 对象，默认值仅在 `Settings` 类中定义一次
+- **导入顺序保证**: `config.py`(加载 .env) → `Settings()` → `database.py`(模块级代码读取 os.environ) → `models.py`(注册 ORM) → `init_db()`(创建表)
+- `database.py` 中保留 `os.environ.get()` 合理：模块级变量需在导入时立即确定值，此时环境变量已由 `config.py` 加载
+
+### 测试统计
+- **总计: 70/70 PASS ✅**

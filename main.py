@@ -1,29 +1,48 @@
 """FastAPI application entry point for tg_file_viewer."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
+
+from config import Settings
+from logging_config import setup_logging
+
+# Initialize settings and logging as early as possible
+settings = Settings()
 
 from database import init_db
+setup_logging(
+    log_level=settings.tg_log_level,
+    log_file=settings.tg_log_file,
+    rotation=settings.tg_log_rotation,
+    retention=settings.tg_log_retention,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
+    logger.info("tg_file_viewer v0.1.0 starting...")
+
     # Startup
+    import models  # noqa: F401 - register all ORM models before table creation
     await init_db()
+    db_path = settings.tg_db_path
+    logger.info("Database initialized at {}", db_path)
+
     # Seed config from .env
     from database import AsyncSessionLocal
-    from config import ensure_initialized, Settings
+    from config import ensure_initialized
     from services.telegram_client import TelegramService, set_telegram_service
 
     async with AsyncSessionLocal() as session:
         await ensure_initialized(session)
 
     # Initialize TelegramService with proxy from settings
-    settings = Settings()
     tg_service = TelegramService(
         api_id=settings.tg_api_id,
         api_hash=settings.tg_api_hash,
@@ -32,11 +51,17 @@ async def lifespan(app: FastAPI):
         proxy_url=settings.tg_proxy_url,
     )
     set_telegram_service(tg_service)
+    logger.info("TelegramService initialized (api_id={}, proxy={})",
+                settings.tg_api_id,
+                "yes" if settings.tg_proxy_url else "no")
 
     yield
+
     # Shutdown
+    logger.info("Shutting down...")
     from database import engine
     await engine.dispose()
+    logger.info("Shutdown complete")
 
 
 app = FastAPI(
@@ -45,6 +70,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Request logging middleware (must be added before CORS)
+from middleware.logging import request_logging_middleware
+
+app.middleware("http")(request_logging_middleware)
 
 # CORS
 app.add_middleware(
@@ -56,10 +86,7 @@ app.add_middleware(
 )
 
 # Static files for thumbnails
-import os
-from pathlib import Path
-
-data_dir = Path(os.environ.get("TG_DATA_DIR", "./data"))
+data_dir = Path(settings.tg_data_dir)
 data_dir.mkdir(parents=True, exist_ok=True)
 thumb_dir = data_dir / "thumbnails"
 thumb_dir.mkdir(parents=True, exist_ok=True)

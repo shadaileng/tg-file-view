@@ -19,7 +19,8 @@
 
 ```
 tg_file_viewer/
-├── main.py              # FastAPI app, lifespan, CORS, 静态文件挂载, 路由注册
+├── logging_config.py  # ✅ loguru 日志初始化: 控制台 + 文件轮转 + 错误分离
+├── main.py              # FastAPI app, lifespan, CORS, 静态文件挂载, 路由注册, 日志配置
 ├── config.py            # Settings类 + DB动态配置(get/set/get_settings/ensure_initialized)
 ├── database.py          # 异步SQLite引擎 + AsyncSessionLocal + Base + get_session/get_db
 ├── models.py            # 5张ORM表: Channel, File, SyncTask, ThumbJob, AppConfig
@@ -30,6 +31,8 @@ tg_file_viewer/
 │   ├── sync.py          # ⏳ 同步触发/管理
 │   ├── thumbnails.py    # ⏳ 缩略图任务管理
 │   └── config.py        # ⏳ 配置管理API
+├── middleware/           # 中间件层
+│   ├── logging.py       # ✅ 请求日志: method + path + status + 耗时ms
 ├── services/            # 业务逻辑层
 │   ├── telegram_client.py  # ✅ TelegramService: Telethon封装, AuthState状态机, 全局单例
 │   ├── sync_engine.py      # ⏳ 同步引擎 (iter_messages + 去重 + 批量INSERT)
@@ -40,8 +43,9 @@ tg_file_viewer/
 │   ├── test_database.py    # ✅ 8 tests
 │   ├── test_config.py      # ✅ 10 tests
 │   ├── test_models.py      # ✅ 12 tests
-│   ├── test_telegram_client.py # ✅ 13 tests
-│   └── test_auth_api.py    # ✅ 9 tests
+│   ├── test_telegram_client.py # ✅ 15 tests
+│   ├── test_auth_api.py    # ✅ 9 tests
+│   └── test_logging.py     # ✅ 13 tests
 ├── frontend/            # ⏳ Vue 3 + Vite + Tailwind (pnpm)
 ├── data/                # 运行时数据 (db.sqlite, thumbnails/, cache/)
 ├── CHANGELOG.md         # 开发日志 (每步更新的详细记录)
@@ -165,6 +169,7 @@ Tests: 65/65 PASS
 - **文档字符串**：每个公开函数/类有 docstring
 - **异常处理**：API 层捕获并转为 HTTPException
 - **无 emoji**：代码中不使用 emoji（测试/文档除外）
+- **配置统一来源**：`main.py` 中所有配置读取**必须**通过 `settings` 对象，禁止使用 `os.environ.get()`。`database.py` 中的模块级 `os.environ.get()` 是合理的（导入时执行），但需要确保 `config.py`（含 `load_dotenv()`）在其之前导入。
 
 ---
 
@@ -230,6 +235,15 @@ set_telegram_service(svc)
 | `TG_CACHE_MAX_SIZE_MB` | 缓存上限 (0=无限) | 0 |
 | `TG_ADMIN_PASSWORD` | 管理员密码 | — |
 | `TG_PORT` | 服务端口 | 8000 |
+
+### 日志配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `TG_LOG_LEVEL` | 控制台日志级别 (DEBUG/INFO/WARNING/ERROR) | INFO |
+| `TG_LOG_FILE` | 日志文件路径 | ./data/app.log |
+| `TG_LOG_ROTATION` | 轮转条件 (如 "10 MB", "1 day") | 10 MB |
+| `TG_LOG_RETENTION` | 保留历史文件数 | 5 |
 
 ---
 
