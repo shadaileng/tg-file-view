@@ -8,26 +8,44 @@
 | `pyproject.toml` | 项目依赖配置 (FastAPI, Telethon, SQLAlchemy+aiosqlite, uv) |
 | `.env.example` | 环境变量模板 (TG_ 前缀, 17 项配置) |
 | `.gitignore` | Git 忽略规则 |
-| `database.py` | 异步 SQLite 引擎 + AsyncSessionLocal + `@asynccontextmanager` get_session + FastAPI get_db 依赖 |
+| `database.py` | 异步 SQLite 引擎 + AsyncSessionLocal + @asynccontextmanager + FastAPI get_db |
 | `models.py` | 5 张 ORM 表: channels, files (FK→channels), sync_tasks, thumb_jobs, app_config |
 | `config.py` | Settings(pydantic-settings) + DB 动态配置 (DB > env > default 优先级) |
-| `main.py` | FastAPI 应用入口 + lifespan + CORS + 静态文件挂载(/thumbnails, /cache) |
+| `main.py` | FastAPI 应用入口 + lifespan + CORS + 静态文件挂载 |
 | `api/__init__.py` | API 路由包 |
 | `services/__init__.py` | 服务层包 |
 | `tests/conftest.py` | pytest fixtures: session-scoped engine init + function-scoped table reset |
 | `tests/test_database.py` | 数据库连接和 CRUD 测试 (8) |
-| `tests/test_config.py` | 配置管理测试: env/Settings/DB-config/get_settings/ensure_initialized (10) |
-| `tests/test_models.py` | ORM 模型约束测试: 创建/默认值/唯一约束/FK (12) |
+| `tests/test_config.py` | 配置管理测试 (10) |
+| `tests/test_models.py` | ORM 模型约束测试 (12) |
+
+### 测试统计: 30/30 PASS ✅
+
+---
+
+## Step 2: Telegram 客户端 + 认证 API ✅ 53/53 PASS
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `services/telegram_client.py` | Telethon 客户端封装: TelegramService, AuthState 状态机, 全局实例管理, proxy 解析 |
+| `api/auth.py` | 认证路由: POST send-code, POST verify-code, POST verify-2fa, GET status, POST logout |
+| `tests/test_telegram_client.py` | Telegram 客户端测试 (13) |
+| `tests/test_auth_api.py` | 认证 API 端点测试 (9) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 注册 auth_router |
 
 ### 关键设计决策
-- **配置优先级**: DB `app_config` > 环境变量 > 默认值
-- **数据库**: `aiosqlite` + SQLAlchemy async，`check_same_thread=False`
-- **测试隔离**: session-scoped 建库 + function-scoped drop/create tables
-- **tg_ref**: 同步时设置，默认为 None（非自动生成）
-- **File.channel_id**: 使用 ForeignKey("channels.id") 关联
+- **AuthState 状态机**: DISCONNECTED → CONNECTING → CODE_SENT → (CODE_VERIFIED|2FA_REQUIRED) → AUTHORIZED
+- **全局服务**: `get/set/reset_telegram_service()` 单例模式
+- **认证流**: send_code → verify_code → (verify_2fa) → authorized
+- **proxy 解析**: 使用 `python_socks.ProxyType`，支持 socks5/socks4
+- **代码简化**: `_ensure_client()` 不过度检查 is_connected，依赖 Telethon 自身幂等性
 
 ### 测试统计
-- **新增**: 30 个测试
-- **通过**: 30/30 ✅
-- **失败**: 0
-- **警告**: 1 (SAWarning, 测试场景预期的键冲突警告)
+- Step 1: 30/30 ✅
+- Step 2 新增: 23/23 ✅
+- **总计: 53/53 PASS ✅**

@@ -57,6 +57,11 @@ cache_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/thumbnails", StaticFiles(directory=str(thumb_dir)), name="thumbnails")
 app.mount("/cache", StaticFiles(directory=str(cache_dir)), name="cache")
 
+# Register API routers
+from api.auth import router as auth_router
+
+app.include_router(auth_router)
+
 
 @app.get("/")
 async def root():
