@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+data/
+*.session
+*.session-journal
+.vscode/
+.idea/
+dist/
+*.egg-info/
+node_modules/
+frontend/dist/
+.pytest_cache/
+.coverage
+htmlcov/
+__pycache__
