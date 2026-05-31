@@ -4,9 +4,9 @@
 
 ---
 
-## Current Phase: Step 6 — 缩略图任务队列 (PriorityQueue)
+## Current Phase: Step 7 — 缓存管理器 (LRU, 动态上限)
 
-**分支**: `feat/thumbnail-task-queue`
+**分支**: `docs/fix-readme-status`（文档修复），下一步 `feat/cache-manager`
 
 ### API 端点设计
 
@@ -304,17 +304,17 @@ tg_file_viewer/
 ├── models.py            # 5张ORM表: Channel, File, SyncTask, ThumbJob, AppConfig
 ├── api/                 # API路由层 (按功能拆分)
 │   ├── auth.py          # ✅ 认证: send-code, verify-code, verify-2fa, status, logout
-│   ├── channels.py      # ✅ 频道CRUD: create(list), read(get/list), delete (14 tests)
-│   ├── files.py         # ⏳ 文件列表/下载/缓存
-│   ├── sync.py          # ⏳ 同步触发/管理
-│   ├── thumbnails.py    # ⏳ 缩略图任务管理
+│   ├── channels.py      # ✅ 频道CRUD: create(list), read(get/list), delete, discover
+│   ├── files.py         # ✅ 文件列表/下载/缓存: list, detail, download, cache
+│   ├── sync.py          # ✅ 同步触发/管理: trigger(202), tasks, cancel
+│   ├── thumbnails.py    # ✅ 缩略图任务管理: trigger, batch, list, stats, cancel
 │   └── config.py        # ⏳ 配置管理API
 ├── middleware/           # 中间件层
 │   ├── logging.py       # ✅ 请求日志: method + path + status + 耗时ms
 ├── services/            # 业务逻辑层
 │   ├── telegram_client.py  # ✅ TelegramService: Telethon封装, AuthState状态机, 全局单例
-│   ├── sync_engine.py      # ⏳ 同步引擎 (iter_messages + 去重 + 批量INSERT)
-│   ├── task_queue.py       # ⏳ 生产者-消费者 PriorityQueue 缩略图任务池
+│   ├── sync_engine.py      # ✅ 同步引擎 (iter_messages + 去重 + 批量INSERT)
+│   ├── task_queue.py       # ✅ 生产者-消费者 PriorityQueue 缩略图任务池
 │   └── cache_manager.py    # ⏳ LRU缓存, 动态上限, 手动触发
 ├── tests/               # 测试文件 (与源文件一一对应)
 │   ├── conftest.py         # fixtures: session-scoped建库, function-scoped reset tables
@@ -323,7 +323,14 @@ tg_file_viewer/
 │   ├── test_models.py      # ✅ 12 tests
 │   ├── test_telegram_client.py # ✅ 15 tests
 │   ├── test_auth_api.py    # ✅ 9 tests
-│   └── test_logging.py     # ✅ 13 tests
+│   ├── test_logging.py     # ✅ 13 tests
+│   ├── test_channels_api.py   # ✅ 19 tests
+│   ├── test_files_api.py      # ✅ 14 tests
+│   ├── test_sync_engine.py    # ✅ 12 tests
+│   ├── test_sync_api.py       # ✅ 12 tests
+│   ├── test_task_queue.py     # ✅ 11 tests
+│   ├── test_thumbnails_api.py # ✅ 13 tests
+│   └── test_data/          # 测试数据
 ├── frontend/            # ⏳ Vue 3 + Vite + Tailwind (pnpm)
 ├── data/                # 运行时数据 (db.sqlite, thumbnails/, cache/)
 ├── CHANGELOG.md         # 开发日志 (每步更新的详细记录)
@@ -389,7 +396,7 @@ TelegramService.auth_state: Enum
 | 3 | 频道管理 API (CRUD) | 19 | ✅ |
 | 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ |
 | 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ |
-| 6 | 缩略图任务队列 (PriorityQueue) | ~18 | ⏳ |
+| 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ |
 | 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ |
 | 8 | 配置管理 API (热更新 DB config) | ~8 | ⏳ |
 | 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ |
