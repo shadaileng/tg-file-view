@@ -4,154 +4,163 @@
 
 ---
 
-## Current Phase: Step 3 — 频道管理 API (CRUD)
+## Current Phase: Step 4 — 文件列表 / 下载 / 缓存 API
 
-**分支**: `feat/channel-management-api`
+**分支**: `feat/file-management-api`
 
 ### API 端点设计
 
-| 方法 | 路径 | 说明 | 请求体 |
+| 方法 | 路径 | 说明 | 请求参数 |
 |------|------|------|--------|
-| `GET` | `/api/channels/discover` | 🆕 发现用户关注的频道（从 Telegram dialogs） | — |
-| `GET` | `/api/channels` | 列表所有已添加频道 | — |
-| `GET` | `/api/channels/{id}` | 获取单个频道详情 | — |
-| `POST` | `/api/channels` | 添加频道（通过 username 或 tg_id） | `{ "username": "..." }` 或 `{ "tg_id": 123 }` |
-| `DELETE` | `/api/channels/{id}` | 删除频道（级联删除文件） | — |
+| `GET` | `/api/channels/{channel_id}/files` | 频道文件列表（分页） | `offset`(0), `limit`(50) |
+| `GET` | `/api/files/{file_id}` | 获取单个文件详情 | — |
+| `GET` | `/api/files/{file_id}/download` | 下载文件（缓存优先+流式） | — |
+| `POST` | `/api/files/{file_id}/cache` | 主动缓存文件（从 Telegram 下载） | — |
+| `DELETE` | `/api/files/{file_id}/cache` | 清除文件缓存 | — |
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 新增 `api/channels.py` (CRUD 路由) | API 层 | 否 |
-| 新增 `GET /api/channels/discover` (频道发现) | API 层 | 否 |
-| 在 `main.py` 注册 `channels_router` | 入口 | 否 |
-| 调用 `TelegramService.get_client()` 解析频道/dialogs | 服务层 | 否 |
-| 新增 `tests/test_channels_api.py` | 测试 | 否 |
+| 新增 `api/files.py` (文件 CRUD+下载路由) | API 层 | 否 |
+| 在 `main.py` 注册 `files_router` | 入口 | 否 |
+| 文件下载调用 Telethon `download_media()` + `iter_download()` | 服务层 | 否 |
+| 流式下载使用 `StreamingResponse` | API 层 | 否 |
+| 新增 `tests/test_files_api.py` | 测试 | 否 |
 | 更新 AGENT.md / CHANGELOG.md | 文档 | 否 |
 
 ### 边界条件与失败模式
 
 | # | 场景 | 预期行为 |
 |---|------|---------|
-| E1 | 添加不存在的频道（无效 username/tg_id） | 返回 404 |
-| E2 | 重复添加同一频道 | 返回 409（tg_id 唯一约束） |
-| E3 | Telegram 客户端未授权时添加 | 返回 400 |
-| E4 | 删除不存在的频道 | 返回 404 |
-| E5 | 请求体为空 / 无效字段 | 返回 422 (Pydantic 校验) |
-| E6 | 发现频道时 Telegram 未授权 | 返回 400 |
-| E7 | 发现频道时 get_dialogs 失败 | 返回 500 |
-| E8 | 用户没有关注任何频道 | 返回 200，空数组 |
+| E1 | 频道不存在时查文件列表 | 404 |
+| E2 | 频道文件列表为空 | 200，空数组 + `total=0` |
+| E3 | 文件不存在时查详情/下载/缓存/清除缓存 | 404 |
+| E4 | Telegram 未授权时下载/缓存 | 400 |
+| E5 | 下载时 Telegram 报错（消息已删除等） | 502 |
+| E6 | 缓存已存在时再次缓存 | 200（幂等/跳过） |
+| E7 | 清除不存在的缓存文件 | 200（幂等） |
+| E8 | 分页超出范围 | 200，空数组 |
+| E9 | 缓存文件时磁盘空间不足 | 500 |
 
 ### GIVEN/WHEN/THEN 场景
 
-#### S1 — Happy Path: 通过 username 添加频道
+#### S1 — Happy Path: 频道文件列表（分页）
 ```
-GIVEN Telegram 客户端已授权，@test_channel 真实存在
-WHEN  POST /api/channels  { "username": "test_channel" }
-THEN 返回 201，tg_id、username、title 已填充，file_count=0
-```
-
-#### S2 — Happy Path: 列表所有频道
-```
-GIVEN 数据库有 2 条 channel 记录
-WHEN  GET /api/channels
-THEN 返回 200，数组含 2 条记录
+GIVEN channel id=1 有 10 个文件
+WHEN  GET /api/channels/1/files?offset=0&limit=5
+THEN 返回 200，files 数组含 5 条记录，total=10，offset=0，limit=5
 ```
 
-#### S3 — Happy Path: 获取单个频道
+#### S2 — Happy Path: 频道文件列表默认分页
 ```
-GIVEN channel id=1 存在
-WHEN  GET /api/channels/1
-THEN 返回 200，含完整字段
-```
-
-#### S4 — Happy Path: 删除频道
-```
-GIVEN channel id=1 存在 + 关联 3 个文件
-WHEN  DELETE /api/channels/1
-THEN 返回 204，channels 和 files 中相关记录均删除
+GIVEN channel id=1 有 3 个文件
+WHEN  GET /api/channels/1/files （不传 offset/limit）
+THEN 返回 200，files 数组含 3 条记录，total=3，offset=0，limit=50
 ```
 
-#### S5 — Edge: 添加不存在的频道
+#### S3 — Edge: 频道不存在
 ```
-GIVEN Telegram 已授权
-WHEN  POST /api/channels  { "username": "not_a_real_channel_xyz" }
+GIVEN channel id=999 不存在
+WHEN  GET /api/channels/999/files
+THEN 返回 404，detail 含 "Channel not found"
+```
+
+#### S4 — Edge: 频道文件列表为空
+```
+GIVEN channel id=1 存在但无关联文件
+WHEN  GET /api/channels/1/files
+THEN 返回 200，files 为空数组，total=0
+```
+
+#### S5 — Happy Path: 获取文件详情
+```
+GIVEN file id=1 存在
+WHEN  GET /api/files/1
+THEN 返回 200，含 id、file_name、file_size、mime_type、file_type、is_cached 等字段
+```
+
+#### S6 — Edge: 获取不存在的文件
+```
+GIVEN file id=999 不存在
+WHEN  GET /api/files/999
 THEN 返回 404，detail 含 "not found"
 ```
 
-#### S6 — Edge: 重复添加
+#### S7 — Happy Path: 缓存文件
 ```
-GIVEN @test_channel 已存在
-WHEN  POST /api/channels  { "username": "test_channel" }
-THEN 返回 409，detail 含 "already exists"
-```
-
-#### S7 — Edge: 客户端未授权
-```
-GIVEN Telegram 未登录
-WHEN  POST /api/channels  { "username": "any_channel" }
-THEN 返回 400，detail 含 "not authorized" 或 "login first"
+GIVEN file id=1 存在（is_cached=false），Telegram 已授权
+WHEN  POST /api/files/1/cache
+THEN 返回 200，is_cached=true，cache_path 已填充
 ```
 
-#### S8 — Edge: 查询不存在的频道
-```
-GIVEN channel id=999 不存在
-WHEN  GET /api/channels/999
-THEN 返回 404
-```
-
-#### S9 — Happy Path: 发现频道
-```
-GIVEN Telegram 已授权，用户关注了 3 个频道（1 个已在系统数据库中）
-WHEN  GET /api/channels/discover
-THEN 返回 200，数组含 3 条记录，1 条 already_tracked=true，2 条 false
-```
-
-#### S10 — Edge: 未授权时 discover
+#### S8 — Edge: 缓存时不授权
 ```
 GIVEN Telegram 未授权
-WHEN  GET /api/channels/discover
+WHEN  POST /api/files/1/cache
 THEN 返回 400，detail 含 "not authorized"
 ```
 
-#### S11 — Edge: 无频道可发现
+#### S9 — Edge: 缓存文件不存在
 ```
-GIVEN Telegram 已授权，但用户没有加入任何频道
-WHEN  GET /api/channels/discover
-THEN 返回 200，空数组 []
-```
-
-#### S12 — Edge: 全部频道已添加
-```
-GIVEN Telegram 已授权，用户关注的频道全部已在系统中
-WHEN  GET /api/channels/discover
-THEN 返回 200，每条记录 already_tracked=true
+GIVEN Telegram 已授权，file id=999 不存在
+WHEN  POST /api/files/999/cache
+THEN 返回 404
 ```
 
-#### S13 — Edge: get_dialogs 异常
+#### S10 — Edge: 缓存已缓存文件（幂等）
 ```
-GIVEN Telegram 已授权，但 Telethon iter_dialogs 抛出异常
-WHEN  GET /api/channels/discover
-THEN 返回 500，含错误详情
+GIVEN file id=1 is_cached=true
+WHEN  POST /api/files/1/cache
+THEN 返回 200，不重复下载
+```
+
+#### S11 — Happy Path: 清除缓存
+```
+GIVEN file id=1 is_cached=true，cache_path 指向存在的文件
+WHEN  DELETE /api/files/1/cache
+THEN 返回 200，is_cached=false，cache_path=null，磁盘文件已删除
+```
+
+#### S12 — Edge: 清除不存在的缓存（幂等）
+```
+GIVEN file id=1 is_cached=false
+WHEN  DELETE /api/files/1/cache
+THEN 返回 200（幂等，不报错）
+```
+
+#### S13 — Happy Path: 下载已缓存文件（流式）
+```
+GIVEN file id=1 is_cached=true，cache_path 指向存在的文件
+WHEN  GET /api/files/1/download
+THEN 返回 200，Content-Type 正确，Content-Disposition 含文件名，流式传输
+```
+
+#### S14 — Edge: 下载未授权时未缓存文件
+```
+GIVEN file id=1 is_cached=false，Telegram 未授权
+WHEN  GET /api/files/1/download
+THEN 返回 400，detail 含 "not authorized"
 ```
 
 ### 场景→测试映射
 
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
-| S1 | 通过 username 添加频道 | `test_create_channel_by_username` | 集成 |
-| S2 | 列表所有频道 | `test_list_channels` | 单元 |
-| S3 | 获取单个频道 | `test_get_channel` | 单元 |
-| S4 | 删除频道级联文件 | `test_delete_channel_cascade` | 集成 |
-| S5 | 添加不存在的频道 | `test_create_channel_not_found` | 单元 |
-| S6 | 重复添加频道 | `test_create_channel_duplicate` | 单元 |
-| S7 | 未授权添加 | `test_create_channel_unauthorized` | 单元 |
-| S8 | 查询不存在的频道 | `test_get_channel_not_found` | 单元 |
-| S9 | 发现频道 | `test_discover_channels` | 集成 |
-| S10 | 未授权 discover | `test_discover_channels_unauthorized` | 单元 |
-| S11 | 无频道可发现 | `test_discover_channels_empty` | 单元 |
-| S12 | 全部已添加 | `test_discover_channels_all_tracked` | 单元 |
-| S13 | get_dialogs 异常 | `test_discover_channels_dialogs_error` | 单元 |
+| S1 | 频道文件列表分页 | `test_list_files_paginated` | 单元 |
+| S2 | 频道文件列表默认分页 | `test_list_files_default_pagination` | 单元 |
+| S3 | 频道不存在 | `test_list_files_channel_not_found` | 单元 |
+| S4 | 频道文件为空 | `test_list_files_empty` | 单元 |
+| S5 | 文件详情 | `test_get_file_detail` | 单元 |
+| S6 | 文件不存在 | `test_get_file_not_found` | 单元 |
+| S7 | 缓存文件 | `test_cache_file` | 集成 |
+| S8 | 缓存不授权 | `test_cache_file_unauthorized` | 单元 |
+| S9 | 缓存文件不存在 | `test_cache_file_not_found` | 单元 |
+| S10 | 幂等缓存 | `test_cache_file_already_cached` | 单元 |
+| S11 | 清除缓存 | `test_delete_cache` | 单元 |
+| S12 | 幂等删除缓存 | `test_delete_cache_not_cached` | 单元 |
+| S13 | 下载已缓存文件 | `test_download_cached_file` | 集成 |
+| S14 | 下载未授权 | `test_download_unauthorized` | 单元 |
 
 ---
 
@@ -259,8 +268,8 @@ TelegramService.auth_state: Enum
 |------|------|--------|------|
 | 1 | 项目骨架 + DB + 配置 + 模型 | 30 | ✅ |
 | 2 | Telegram 客户端 + 认证 API | 23 | ✅ |
-| 3 | 频道管理 API (CRUD) | ~12 | ✅ |
-| 4 | 文件列表 / 下载 / 缓存 API | ~14 | ⏳ |
+| 3 | 频道管理 API (CRUD) | 19 | ✅ |
+| 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ |
 | 5 | 同步引擎 (Telethon iter → DB) | ~16 | ⏳ |
 | 6 | 缩略图任务队列 (PriorityQueue) | ~18 | ⏳ |
 | 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ |

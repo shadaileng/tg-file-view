@@ -99,9 +99,11 @@ app.mount("/cache", StaticFiles(directory=str(cache_dir)), name="cache")
 # Register API routers
 from api.auth import router as auth_router
 from api.channels import router as channels_router
+from api.files import router as files_router
 
 app.include_router(auth_router)
 app.include_router(channels_router)
+app.include_router(files_router)
 
 
 @app.get("/")

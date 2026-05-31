@@ -175,3 +175,56 @@
 - Step 3 (已有): 14/14 ✅
 - Step 3 (discover 新增): 5/5 待验证
 - 预期总计: 89/89 PASS
+
+---
+
+## Step 4: 文件列表 / 下载 / 缓存 API ✅ 103/103 PASS
+
+### 新增功能
+- `GET /api/channels/{channel_id}/files`: 分页文件列表，支持 offset/limit
+- `GET /api/files/{file_id}`: 获取单个文件详情
+- `GET /api/files/{file_id}/download`: 流式下载（缓存优先，未缓存从 Telegram 拉取）
+- `POST /api/files/{file_id}/cache`: 主动缓存文件（从 Telegram 下载到本地）
+- `DELETE /api/files/{file_id}/cache`: 清除文件缓存
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 频道文件列表分页 | `test_list_files_paginated` | 单元 |
+| S2 | 频道文件列表默认分页 | `test_list_files_default_pagination` | 单元 |
+| S3 | 频道不存在 | `test_list_files_channel_not_found` | 单元 |
+| S4 | 频道文件为空 | `test_list_files_empty` | 单元 |
+| S5 | 文件详情 | `test_get_file_detail` | 单元 |
+| S6 | 文件不存在 | `test_get_file_not_found` | 单元 |
+| S7 | 缓存文件 | `test_cache_file` | 集成 |
+| S8 | 缓存不授权 | `test_cache_file_unauthorized` | 单元 |
+| S9 | 缓存文件不存在 | `test_cache_file_not_found` | 单元 |
+| S10 | 幂等缓存 | `test_cache_file_already_cached` | 单元 |
+| S11 | 清除缓存 | `test_delete_cache` | 单元 |
+| S12 | 幂等删除缓存 | `test_delete_cache_not_cached` | 单元 |
+| S13 | 下载已缓存文件 | `test_download_cached_file` | 集成 |
+| S14 | 下载未授权 | `test_download_unauthorized` | 单元 |
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `api/files.py` | 文件 CRUD + 下载 + 缓存管理路由 |
+| `tests/test_files_api.py` | 文件 API 测试 (14 tests) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 注册 `files_router` |
+| `AGENT.md` | Step 4 场景文档 |
+| `CHANGELOG.md` | 本条目 |
+
+### 关键设计决策
+- **分页**: offset/limit 模式，默认 limit=50
+- **缓存目录**: `data/cache/{channel_id}/{file_id}_{safe_filename}`
+- **下载流式**: 使用 Telethon `iter_download()` + FastAPI `StreamingResponse`
+- **幂等缓存**: 已缓存文件不重复下载
+- **缓存清除**: 已缓存文件从磁盘删除 + DB 字段清空
+
+### 测试统计
+- 新增: 14/14 ✅
+- **总计: 103/103 PASS ✅**
