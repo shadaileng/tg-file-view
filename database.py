@@ -4,6 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from loguru import logger
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -38,10 +39,16 @@ class Base(DeclarativeBase):
 
 async def init_db(drop_first: bool = False):
     """Initialize database: create all tables."""
-    async with engine.begin() as conn:
-        if drop_first:
-            await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Initializing database at {} (drop_first={})", DB_PATH, drop_first)
+    try:
+        async with engine.begin() as conn:
+            if drop_first:
+                await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error("Database initialization failed: {}", e)
+        raise
 
 
 @asynccontextmanager

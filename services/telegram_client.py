@@ -1,11 +1,11 @@
 """Telegram client service using Telethon."""
 
 import asyncio
-import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from loguru import logger
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import (
@@ -13,8 +13,6 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneCodeExpiredError,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class AuthState(str, Enum):

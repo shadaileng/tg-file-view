@@ -1,8 +1,7 @@
 """Authentication API routes for Telegram login."""
 
-import logging
-
 from fastapi import APIRouter, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from services.telegram_client import (
@@ -10,8 +9,6 @@ from services.telegram_client import (
     reset_telegram_service,
     AuthState,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 

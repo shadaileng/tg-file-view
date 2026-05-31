@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from dotenv import load_dotenv
+from loguru import logger
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from sqlalchemy import select
@@ -43,6 +44,12 @@ class Settings(BaseSettings):
 
     # Cache
     cache_max_size_mb: int = 0  # 0 = no limit
+
+    # Logging
+    tg_log_level: str = Field("INFO", validation_alias="TG_LOG_LEVEL")
+    tg_log_file: str = Field("./data/app.log", validation_alias="TG_LOG_FILE")
+    tg_log_rotation: str = Field("10 MB", validation_alias="TG_LOG_ROTATION")
+    tg_log_retention: int = Field(5, validation_alias="TG_LOG_RETENTION")
 
     # Server
     host: str = "0.0.0.0"
@@ -171,12 +178,16 @@ async def ensure_initialized(db_session: AsyncSession) -> None:
         "debug": str(settings.debug).lower(),
     }
 
+    seeded = 0
     for key, value in seed_values.items():
         existing = await db_session.get(AppConfig, key)
         if existing is None:
             db_session.add(AppConfig(key=key, value=value))
+            seeded += 1
 
     await db_session.commit()
+    if seeded:
+        logger.info("Seeded %d new config entries from .env", seeded)
 
 
 async def is_admin(password: str | None) -> bool:

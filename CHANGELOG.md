@@ -131,3 +131,47 @@
 
 ### 测试统计
 - **总计: 70/70 PASS ✅**
+
+---
+
+## Step 3: 频道管理 API (CRUD) ✅ 84/84 PASS → 频道发现功能
+
+### 新增功能
+- `GET /api/channels/discover`: 从 Telegram dialogs 发现用户关注的频道，自动标记 `already_tracked`
+- `_channel_to_dict` 新增 `already_tracked` 字段
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 通过 username 添加频道 | `test_create_channel_by_username` | 集成 |
+| S2 | 列表所有频道 | `test_list_channels` | 单元 |
+| S3 | 获取单个频道 | `test_get_channel` | 单元 |
+| S4 | 删除频道级联文件 | `test_delete_channel_cascade` | 集成 |
+| S5 | 添加不存在的频道 | `test_create_channel_not_found` | 单元 |
+| S6 | 重复添加频道 | `test_create_channel_duplicate` | 单元 |
+| S7 | 未授权添加 | `test_create_channel_unauthorized` | 单元 |
+| S8 | 查询不存在的频道 | `test_get_channel_not_found` | 单元 |
+| S9 | 发现频道 | `test_discover_channels` | 集成 |
+| S10 | 未授权 discover | `test_discover_channels_unauthorized` | 单元 |
+| S11 | 无频道可发现 | `test_discover_channels_empty` | 单元 |
+| S12 | 全部已添加 | `test_discover_channels_all_tracked` | 单元 |
+| S13 | get_dialogs 异常 | `test_discover_channels_dialogs_error` | 单元 |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `api/channels.py` | 新增 `GET /api/channels/discover`；`_channel_to_dict` 支持 `already_tracked`；`_require_authorized_client` 提取为公共函数 |
+| `tests/test_channels_api.py` | 新增 5 个 discover 测试 |
+| `AGENT.md` | 新增 S9-S13 场景 |
+| `CHANGELOG.md` | 本条目 |
+
+### 关键设计决策
+- **发现机制**: 使用 Telethon `client.iter_dialogs()` 获取对话列表，过滤 `Channel` 类型
+- **already_tracked**: 通过查询数据库对比 tg_id 判断频道是否已添加
+- **性能**: `iter_dialogs(limit=200)` 只返回对话元数据，不拉取历史消息
+
+### 测试统计
+- Step 1-2: 70/70 ✅
+- Step 3 (已有): 14/14 ✅
+- Step 3 (discover 新增): 5/5 待验证
+- 预期总计: 89/89 PASS
