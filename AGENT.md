@@ -4,163 +4,139 @@
 
 ---
 
-## Current Phase: Step 4 — 文件列表 / 下载 / 缓存 API
+## Current Phase: Step 5 — 同步引擎
 
-**分支**: `feat/file-management-api`
+**分支**: `feat/sync-engine`
 
 ### API 端点设计
 
-| 方法 | 路径 | 说明 | 请求参数 |
-|------|------|------|--------|
-| `GET` | `/api/channels/{channel_id}/files` | 频道文件列表（分页） | `offset`(0), `limit`(50) |
-| `GET` | `/api/files/{file_id}` | 获取单个文件详情 | — |
-| `GET` | `/api/files/{file_id}/download` | 下载文件（缓存优先+流式） | — |
-| `POST` | `/api/files/{file_id}/cache` | 主动缓存文件（从 Telegram 下载） | — |
-| `DELETE` | `/api/files/{file_id}/cache` | 清除文件缓存 | — |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/channels/{channel_id}/sync` | 触发频道同步（后台异步） |
+| `GET` | `/api/channels/{channel_id}/sync/tasks` | 频道同步任务列表 |
+| `GET` | `/api/sync/tasks/{task_id}` | 获取单个同步任务详情 |
+| `POST` | `/api/sync/tasks/{task_id}/cancel` | 取消正在运行的同步 |
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 新增 `api/files.py` (文件 CRUD+下载路由) | API 层 | 否 |
-| 在 `main.py` 注册 `files_router` | 入口 | 否 |
-| 文件下载调用 Telethon `download_media()` + `iter_download()` | 服务层 | 否 |
-| 流式下载使用 `StreamingResponse` | API 层 | 否 |
-| 新增 `tests/test_files_api.py` | 测试 | 否 |
+| 新增 `services/sync_engine.py` (同步引擎) | 服务层 | 否 |
+| 新增 `api/sync.py` (同步触发/管理路由) | API 层 | 否 |
+| 在 `main.py` 注册 `sync_router` | 入口 | 否 |
+| 新增 `tests/test_sync_engine.py` | 测试 | 否 |
+| 新增 `tests/test_sync_api.py` | 测试 | 否 |
 | 更新 AGENT.md / CHANGELOG.md | 文档 | 否 |
+
+### 核心设计要点
+
+1. **消息遍历**：使用 Telethon `iter_messages()` 遍历频道历史消息
+2. **媒体提取**：提取 photo/video/document/audio/voice/sticker 等媒体消息
+3. **去重策略**：利用 `files` 表的 `UniqueConstraint(channel_id, message_id)` 批量查询后 INSERT
+4. **增量同步**：记录频道 `last_sync` 时间戳，有记录时使用 `offset_date` 只拉新消息
+5. **批量写入**：每 `sync_batch_size` 条批量 commit
+6. **进度追踪**：每次同步创建一个 `SyncTask`，实时更新计数
+7. **可取消**：通过设置 `SyncTask.status = "cancelled"` + 同步循环检测实现
+8. **后台异步**：API 创建 SyncTask 后通过 `asyncio.create_task()` 后台运行同步
 
 ### 边界条件与失败模式
 
 | # | 场景 | 预期行为 |
 |---|------|---------|
-| E1 | 频道不存在时查文件列表 | 404 |
-| E2 | 频道文件列表为空 | 200，空数组 + `total=0` |
-| E3 | 文件不存在时查详情/下载/缓存/清除缓存 | 404 |
-| E4 | Telegram 未授权时下载/缓存 | 400 |
-| E5 | 下载时 Telegram 报错（消息已删除等） | 502 |
-| E6 | 缓存已存在时再次缓存 | 200（幂等/跳过） |
-| E7 | 清除不存在的缓存文件 | 200（幂等） |
-| E8 | 分页超出范围 | 200，空数组 |
-| E9 | 缓存文件时磁盘空间不足 | 500 |
+| E1 | Telegram 未授权 | 400 – "not authorized" |
+| E2 | 频道不存在于 DB | 404 – "channel not found" |
+| E3 | 频道在 Telegram 上不存在/不可访问 | 502 – 错误详情，SyncTask 标记 failed |
+| E4 | 频道无任何文件消息 | 200 – SyncTask completed，total=0 |
+| E5 | 同步中途失败（网络中断等） | SyncTask 标记 failed，已同步的保留 |
+| E6 | 同一频道重复触发同步（并发） | 检测 running 状态，返回 409 |
+| E7 | 大量消息 | 分批拉取 + 批量 commit，不 OOM |
 
 ### GIVEN/WHEN/THEN 场景
 
-#### S1 — Happy Path: 频道文件列表（分页）
+#### S1 — Happy Path: 正常同步
 ```
-GIVEN channel id=1 有 10 个文件
-WHEN  GET /api/channels/1/files?offset=0&limit=5
-THEN 返回 200，files 数组含 5 条记录，total=10，offset=0，limit=5
-```
-
-#### S2 — Happy Path: 频道文件列表默认分页
-```
-GIVEN channel id=1 有 3 个文件
-WHEN  GET /api/channels/1/files （不传 offset/limit）
-THEN 返回 200，files 数组含 3 条记录，total=3，offset=0，limit=50
+GIVEN channel id=1 存在且 Telegram 已授权，频道有 10 条媒体消息
+WHEN  POST /api/channels/1/sync
+THEN  返回 202 + task_id，SyncTask 状态 running→completed，files 表新增 10 条（去重后）
 ```
 
-#### S3 — Edge: 频道不存在
+#### S2 — Happy Path: 增量同步
+```
+GIVEN channel id=1 已同步过 5 条文件，last_sync 已设置
+WHEN  POST /api/channels/1/sync
+THEN  返回 202，synced=5（新增），skipped=5（重复），不产生数据库重复记录
+```
+
+#### S3 — Happy Path: 频道无文件消息
+```
+GIVEN channel id=1 存在但所有消息都为纯文本（无媒体）
+WHEN  POST /api/channels/1/sync
+THEN  返回 202，SyncTask completed，total_files=0，synced_files=0
+```
+
+#### S4 — Happy Path: 查询同步任务列表
+```
+GIVEN channel id=1 有 2 个已完成 sync task
+WHEN  GET /api/channels/1/sync/tasks
+THEN  返回 200，2 条记录，按创建时间倒序
+```
+
+#### S5 — Happy Path: 查询单个同步任务
+```
+GIVEN task_id=xxx 存在
+WHEN  GET /api/sync/tasks/xxx
+THEN  返回 200，含 id/status/synced_files/skipped_files/errors 等字段
+```
+
+#### S6 — Edge: 同步频道不存在
 ```
 GIVEN channel id=999 不存在
-WHEN  GET /api/channels/999/files
-THEN 返回 404，detail 含 "Channel not found"
+WHEN  POST /api/channels/999/sync
+THEN  返回 404，detail 含 "not found"
 ```
 
-#### S4 — Edge: 频道文件列表为空
-```
-GIVEN channel id=1 存在但无关联文件
-WHEN  GET /api/channels/1/files
-THEN 返回 200，files 为空数组，total=0
-```
-
-#### S5 — Happy Path: 获取文件详情
-```
-GIVEN file id=1 存在
-WHEN  GET /api/files/1
-THEN 返回 200，含 id、file_name、file_size、mime_type、file_type、is_cached 等字段
-```
-
-#### S6 — Edge: 获取不存在的文件
-```
-GIVEN file id=999 不存在
-WHEN  GET /api/files/999
-THEN 返回 404，detail 含 "not found"
-```
-
-#### S7 — Happy Path: 缓存文件
-```
-GIVEN file id=1 存在（is_cached=false），Telegram 已授权
-WHEN  POST /api/files/1/cache
-THEN 返回 200，is_cached=true，cache_path 已填充
-```
-
-#### S8 — Edge: 缓存时不授权
+#### S7 — Edge: Telegram 未授权
 ```
 GIVEN Telegram 未授权
-WHEN  POST /api/files/1/cache
-THEN 返回 400，detail 含 "not authorized"
+WHEN  POST /api/channels/1/sync
+THEN  返回 400，detail 含 "not authorized"
 ```
 
-#### S9 — Edge: 缓存文件不存在
+#### S8 — Edge: 同步已在运行中
 ```
-GIVEN Telegram 已授权，file id=999 不存在
-WHEN  POST /api/files/999/cache
-THEN 返回 404
-```
-
-#### S10 — Edge: 缓存已缓存文件（幂等）
-```
-GIVEN file id=1 is_cached=true
-WHEN  POST /api/files/1/cache
-THEN 返回 200，不重复下载
+GIVEN 频道 id=1 有一个 running 状态的 SyncTask
+WHEN  POST /api/channels/1/sync
+THEN  返回 409，detail 含 "sync already in progress"
 ```
 
-#### S11 — Happy Path: 清除缓存
+#### S9 — Edge: 取消同步
 ```
-GIVEN file id=1 is_cached=true，cache_path 指向存在的文件
-WHEN  DELETE /api/files/1/cache
-THEN 返回 200，is_cached=false，cache_path=null，磁盘文件已删除
-```
-
-#### S12 — Edge: 清除不存在的缓存（幂等）
-```
-GIVEN file id=1 is_cached=false
-WHEN  DELETE /api/files/1/cache
-THEN 返回 200（幂等，不报错）
+GIVEN 频道 id=1 有一个 running 状态的 SyncTask（task_id=xxx）
+WHEN  POST /api/sync/tasks/xxx/cancel
+THEN  返回 200，SyncTask status 被设为 cancelled
 ```
 
-#### S13 — Happy Path: 下载已缓存文件（流式）
+#### S10 — Edge: 取消已完成的任务
 ```
-GIVEN file id=1 is_cached=true，cache_path 指向存在的文件
-WHEN  GET /api/files/1/download
-THEN 返回 200，Content-Type 正确，Content-Disposition 含文件名，流式传输
-```
-
-#### S14 — Edge: 下载未授权时未缓存文件
-```
-GIVEN file id=1 is_cached=false，Telegram 未授权
-WHEN  GET /api/files/1/download
-THEN 返回 400，detail 含 "not authorized"
+GIVEN task_id=xxx 的 SyncTask 已完成
+WHEN  POST /api/sync/tasks/xxx/cancel
+THEN  返回 400，detail 含 "not running"
 ```
 
 ### 场景→测试映射
 
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
-| S1 | 频道文件列表分页 | `test_list_files_paginated` | 单元 |
-| S2 | 频道文件列表默认分页 | `test_list_files_default_pagination` | 单元 |
-| S3 | 频道不存在 | `test_list_files_channel_not_found` | 单元 |
-| S4 | 频道文件为空 | `test_list_files_empty` | 单元 |
-| S5 | 文件详情 | `test_get_file_detail` | 单元 |
-| S6 | 文件不存在 | `test_get_file_not_found` | 单元 |
-| S7 | 缓存文件 | `test_cache_file` | 集成 |
-| S8 | 缓存不授权 | `test_cache_file_unauthorized` | 单元 |
-| S9 | 缓存文件不存在 | `test_cache_file_not_found` | 单元 |
-| S10 | 幂等缓存 | `test_cache_file_already_cached` | 单元 |
-| S11 | 清除缓存 | `test_delete_cache` | 单元 |
-| S12 | 幂等删除缓存 | `test_delete_cache_not_cached` | 单元 |
-| S13 | 下载已缓存文件 | `test_download_cached_file` | 集成 |
-| S14 | 下载未授权 | `test_download_unauthorized` | 单元 |
+| S1 | 正常同步 | `test_sync_full` | 集成 |
+| S2 | 增量同步 | `test_sync_incremental` | 集成 |
+| S3 | 频道无文件消息 | `test_sync_empty_channel` | 集成 |
+| S4 | 查询任务列表 | `test_list_sync_tasks` | 单元 |
+| S5 | 查询单个任务 | `test_get_sync_task` | 单元 |
+| S6 | 频道不存在 | `test_sync_channel_not_found` | 单元 |
+| S7 | 未授权 | `test_sync_unauthorized` | 单元 |
+| S8 | 同步进行中冲突 | `test_sync_already_running` | 单元 |
+| S9 | 取消同步 | `test_cancel_sync_task` | 单元 |
+| S10 | 取消已完成任务 | `test_cancel_non_running_task` | 单元 |
 
 ---
 
@@ -270,7 +246,7 @@ TelegramService.auth_state: Enum
 | 2 | Telegram 客户端 + 认证 API | 23 | ✅ |
 | 3 | 频道管理 API (CRUD) | 19 | ✅ |
 | 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ |
-| 5 | 同步引擎 (Telethon iter → DB) | ~16 | ⏳ |
+| 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ |
 | 6 | 缩略图任务队列 (PriorityQueue) | ~18 | ⏳ |
 | 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ |
 | 8 | 配置管理 API (热更新 DB config) | ~8 | ⏳ |

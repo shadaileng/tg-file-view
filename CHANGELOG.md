@@ -228,3 +228,49 @@
 ### 测试统计
 - 新增: 14/14 ✅
 - **总计: 103/103 PASS ✅**
+
+---
+
+## Step 5: 同步引擎 — Telethon iter → DB ✅ 127/127 PASS
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `services/sync_engine.py` | 同步引擎核心: iter_messages + 媒体提取(photo/video/audio/sticker/document) + 去重(批量 SELECT + INSERT) + SyncTask 进度追踪 + 取消支持 |
+| `api/sync.py` | 同步 API: POST trigger-sync(202, 后台异步), GET list-tasks, GET task-detail, POST cancel |
+| `tests/test_sync_engine.py` | 同步引擎测试 (12): 媒体提取(7) + 集成同步(5) |
+| `tests/test_sync_api.py` | 同步 API 测试 (12): trigger(4) + list(3) + get(2) + cancel(3) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 注册 `sync_router` |
+| `AGENT.md` | Step 5 场景文档 (S1-S10) + 场景→测试映射 |
+| `CHANGELOG.md` | 本条目 |
+
+### 关键设计决策
+- **后台异步同步**: API 返回 202 后通过 `asyncio.create_task()` 后台运行，通过 `_running_syncs` dict 管理任务生命周期
+- **去重策略**: 批量消息中先 SELECT 已存在的 message_id（单次查询），只 INSERT 新记录，避免 N+1
+- **增量同步**: 频道 `last_sync` 有值时传入 `offset_date` 只拉取新消息
+- **type 检测**: 通过 `DocumentAttributeVideo/Audio/Sticker` 等属性名检测文件类型
+- **file_reference**: 只存储真实 bytes 的 `file_reference`（`isinstance` 检查），用于后续下载/缩略图
+- **取消机制**: `POST /api/sync/tasks/{id}/cancel` 设置 status=cancelled，同步循环通过 `db.refresh()` 检测并停止
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 正常同步 | `test_sync_full` / `test_sync_triggered` | 集成 |
+| S2 | 增量同步 | `test_sync_incremental` | 集成 |
+| S3 | 频道无文件 | `test_sync_empty_channel` | 集成 |
+| S4 | 查询任务列表 | `test_list_with_tasks` | 单元 |
+| S5 | 查询单个任务 | `test_get_task` | 单元 |
+| S6 | 频道不存在 | `test_sync_channel_not_found` | 单元 |
+| S7 | 未授权 | `test_sync_unauthorized` | 单元 |
+| S8 | 同步进行中冲突 | `test_sync_already_running` | 单元 |
+| S9 | 取消同步 | `test_cancel_running_task` | 单元 |
+| S10 | 取消已完成任务 | `test_cancel_non_running_task` | 单元 |
+
+### 测试统计
+- Step 1-4: 103/103 ✅
+- Step 5 新增: 24/24 ✅ (sync_engine 12 + sync_api 12)
+- **总计: 127/127 PASS ✅**
