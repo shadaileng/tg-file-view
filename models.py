@@ -52,6 +52,8 @@ class File(Base):
     thumb_type: Mapped[str] = mapped_column(String(20), default="auto")  # auto, manual
     cache_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_cached: Mapped[bool] = mapped_column(default=False)
+    cached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # when file was first cached
+    accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last access for LRU eviction
     tg_ref: Mapped[str | None] = mapped_column(Text, nullable=True)  # telethon file reference
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

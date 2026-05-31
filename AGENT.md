@@ -4,281 +4,130 @@
 
 ---
 
-## Current Phase: Step 7 — 缓存管理器 (LRU, 动态上限)
+## Current Phase: Step 7 — 缓存管理器 (LRU + 动态上限) ✅
 
-**分支**: `docs/fix-readme-status`（文档修复），下一步 `feat/cache-manager`
+**分支**: `feat/cache-manager`
 
 ### API 端点设计
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/channels/{channel_id}/sync` | 触发频道同步（后台异步） |
-| `GET` | `/api/channels/{channel_id}/sync/tasks` | 频道同步任务列表 |
-| `GET` | `/api/sync/tasks/{task_id}` | 获取单个同步任务详情 |
-| `POST` | `/api/sync/tasks/{task_id}/cancel` | 取消正在运行的同步 |
-| `POST` | `/api/files/{file_id}/thumbnail` | 手动触发单文件缩略图生成 |
-| `POST` | `/api/thumbnails/generate-batch` | 批量提交缩略图任务 |
-| `GET` | `/api/thumbnails/jobs` | 任务列表 (支持 ?status= 过滤) |
-| `GET` | `/api/thumbnails/jobs/{job_id}` | 单个任务详情 |
-| `GET` | `/api/thumbnails/stats` | 统计概览 |
-| `POST` | `/api/thumbnails/jobs/{job_id}/cancel` | 取消任务 |
+| `GET` | `/api/cache/stats` | 缓存统计概览（总量、文件数、使用率） |
+| `POST` | `/api/cache/evict` | 手动触发 LRU 淘汰至配置上限 |
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 新增 `services/sync_engine.py` (同步引擎) | 服务层 | 否 |
-| 新增 `api/sync.py` (同步触发/管理路由) | API 层 | 否 |
-| 新增 `services/task_queue.py` (worker pool + 缩略图生成) | 服务层 | 否 |
-| 新增 `api/thumbnails.py` (缩略图任务管理路由) | API 层 | 否 |
-| 修改 `main.py` — 注册 sync_router + thumb_router + lifespan 启停 worker pool | 入口 | 否 |
-| 新增 `tests/test_sync_engine.py`、`tests/test_sync_api.py` | 测试 | 否 |
-| 新增 `tests/test_task_queue.py`、`tests/test_thumbnails_api.py` | 测试 | 否 |
+| `File` 模型新增 `cached_at` / `accessed_at` 列 | `models.py` | 否（nullable） |
+| 新增 `services/cache_manager.py`（LRU 淘汰 + 大小追踪） | 服务层 | 否 |
+| 新增 `api/cache.py`（统计 + 手动淘汰 API） | API 层 | 否 |
+| 修改 `api/files.py` — `_ensure_cached` 集成 CacheManager | API 层 | 否 |
+| 修改 `main.py` — 注册 cache_router | 入口 | 否 |
+| 新增 `tests/test_cache_manager.py` | 测试 | 否 |
 | 更新 AGENT.md / CHANGELOG.md | 文档 | 否 |
 
 ### 核心设计要点
 
-**同步引擎 (Step 5)**:
-1. **消息遍历**：使用 Telethon `iter_messages()` 遍历频道历史消息
-2. **媒体提取**：提取 photo/video/document/audio/voice/sticker 等媒体消息
-3. **去重策略**：利用 `files` 表的 `UniqueConstraint(channel_id, message_id)` 批量查询后 INSERT
-4. **增量同步**：记录频道 `last_sync` 时间戳，有记录时使用 `offset_date` 只拉新消息
-5. **批量写入**：每 `sync_batch_size` 条批量 commit
-6. **进度追踪**：每次同步创建一个 `SyncTask`，实时更新计数
-7. **可取消**：通过设置 `SyncTask.status = "cancelled"` + 同步循环检测实现
-8. **后台异步**：API 创建 SyncTask 后通过 `asyncio.create_task()` 后台运行同步
-
-**缩略图任务队列 (Step 6)**:
-1. **生产者-消费者**: 使用 `asyncio.PriorityQueue` 作为任务队列，Worker 从队列消费
-2. **DB 持久化**: ThumbJob 记录在数据库中，服务重启时从 DB 恢复 pending 任务
-3. **优先级**: photo(3) > sticker(4) > video(4) > document(5)，1 最高优先
-4. **仅支持图片缩略图**（本步）: 使用 Pillow 生成，视频需要 ffmpeg（未来）
-5. **失败重试**: 最多 3 次，指数退避 (1s, 2s, 4s)
-6. **缩略图目录**: `thumbnails/{channel_id}/{file_id}.jpg`
-7. **文件下载**: 生成缩略图前先确保文件已缓存（否则从 Telegram 下载）
-8. **Workers 在 lifespan 启停**: 启动时创建 N 个 worker task + 恢复 pending jobs；关闭时取消 worker
+1. **LRU 淘汰策略**：每次访问文件（下载、缩略图生成）更新 `accessed_at`。淘汰时按 `accessed_at ASC`（最久未访问优先），NULL 值视为最先淘汰。
+2. **淘汰触发时机**：下载前预检查（`check_and_evict`）→ 下载后后检查（`post_download_check`）。两阶段确保不浪费带宽。
+3. **动态上限**：每次操作实时从 DB `app_config` 读取 `cache_max_size_mb`，支持热更新。
+4. **`cached_at` vs `accessed_at`**：`cached_at`=文件首次缓存时刻；`accessed_at`=最后一次访问时刻。淘汰依据是 `accessed_at`。
+5. **缓存大小追踪**：使用 DB 中 `SUM(file_size) WHERE is_cached=true` 代替磁盘扫描，更快。
+6. **无限模式**：`cache_max_size_mb=0` 时跳过所有检查和淘汰。
 
 ### 边界条件与失败模式
 
-**同步引擎**:
-
 | # | 场景 | 预期行为 |
 |---|------|---------|
-| E1 | Telegram 未授权 | 400 – "not authorized" |
-| E2 | 频道不存在于 DB | 404 – "channel not found" |
-| E3 | 频道在 Telegram 上不存在/不可访问 | 502 – 错误详情，SyncTask 标记 failed |
-| E4 | 频道无任何文件消息 | 200 – SyncTask completed，total=0 |
-| E5 | 同步中途失败（网络中断等） | SyncTask 标记 failed，已同步的保留 |
-| E6 | 同一频道重复触发同步（并发） | 检测 running 状态，返回 409 |
-| E7 | 大量消息 | 分批拉取 + 批量 commit，不 OOM |
-
-**缩略图任务队列**:
-
-| # | 场景 | 预期行为 |
-|---|------|---------|
-| E1 | 无 pending jobs | Workers 空闲等待，不崩溃，不忙轮询 CPU |
-| E2 | 同一文件重复提交 | 检测已有 pending/processing 的 ThumbJob → 409 |
-| E3 | 文件下载失败 | retry ≤3 次，失败后标记 status=failed + error_msg |
-| E4 | 不支持的格式 | 标记 failed，记录 "unsupported format" |
-| E5 | Workers 全忙 | 任务排队，按优先级顺序处理 |
-| E6 | 并发大量提交 | PriorityQueue 保证顺序，不 OOM |
-| E7 | 优雅关闭 | Workers 完成当前任务后退出，pending 保留 DB |
-| E8 | 文件未缓存 | 先下载到 cache/，再生成缩略图 |
+| E1 | `cache_max_size_mb = 0` | 无限模式，不淘汰，不检查 |
+| E2 | 单个文件大小超过上限（无其他文件）| 返回 507，不下载 |
+| E3 | 淘汰后空间仍不够 | 返回 507 Insufficient Storage |
+| E4 | 淘汰时磁盘文件已被手动删除 | 跳过磁盘删除，DB 标记 `is_cached=false`，继续淘汰下一个 |
+| E5 | 动态修改 `cache_max_size_mb` | 下一次缓存操作自动读取新值，若当前已超限则触发淘汰 |
+| E6 | 所有缓存文件都被频繁访问 | 返回 507，告知无冷数据可淘汰 |
 
 ### GIVEN/WHEN/THEN 场景
 
-**同步引擎 (Step 5)**:
-
-#### S1 — Happy Path: 正常同步
+#### S1 — Happy Path: 下载触发 LRU 淘汰
 ```
-GIVEN channel id=1 存在且 Telegram 已授权，频道有 10 条媒体消息
-WHEN  POST /api/channels/1/sync
-THEN  返回 202 + task_id，SyncTask 状态 running→completed，files 表新增 10 条（去重后）
-```
-
-#### S2 — Happy Path: 增量同步
-```
-GIVEN channel id=1 已同步过 5 条文件，last_sync 已设置
-WHEN  POST /api/channels/1/sync
-THEN  返回 202，synced=5（新增），skipped=5（重复），不产生数据库重复记录
+GIVEN cache_max_size_mb=2, 当前缓存 2MB（2个文件），新文件 1MB
+WHEN  调用 _ensure_cached(file_id=3, size=1MB)
+THEN  预检查：2 + 1 = 3 > 2 → 需要释放 ≥1MB
+      淘汰 1 个 LRU 文件（1MB, accessed_at 最早）→ 当前缓存 1MB
+      下载 file_3（1MB）→ 当前缓存 2MB ≤ 上限
+      返回成功，File_3.is_cached=true, cached_at & accessed_at 已设置
 ```
 
-#### S3 — Happy Path: 频道无文件消息
+#### S2 — Happy Path: 查看缓存统计
 ```
-GIVEN channel id=1 存在但所有消息都为纯文本（无媒体）
-WHEN  POST /api/channels/1/sync
-THEN  返回 202，SyncTask completed，total_files=0，synced_files=0
-```
-
-#### S4 — Happy Path: 查询同步任务列表
-```
-GIVEN channel id=1 有 2 个已完成 sync task
-WHEN  GET /api/channels/1/sync/tasks
-THEN  返回 200，2 条记录，按创建时间倒序
+GIVEN 5 个文件缓存，总计 150MB，上限 500MB
+WHEN  GET /api/cache/stats
+THEN  返回 { total_size_mb: 150.0, file_count: 5, max_size_mb: 500, usage_percent: 30.0 }
 ```
 
-#### S5 — Happy Path: 查询单个同步任务
+#### S3 — Happy Path: 手动触发淘汰
 ```
-GIVEN task_id=xxx 存在
-WHEN  GET /api/sync/tasks/xxx
-THEN  返回 200，含 id/status/synced_files/skipped_files/errors 等字段
-```
-
-#### S6 — Edge: 同步频道不存在
-```
-GIVEN channel id=999 不存在
-WHEN  POST /api/channels/999/sync
-THEN  返回 404，detail 含 "not found"
+GIVEN cache_max_size_mb=1, 当前缓存 5MB（5个文件）
+WHEN  POST /api/cache/evict
+THEN  按 LRU 淘汰文件直至 ≤1MB
+      返回 { evicted_count: 4, freed_mb: 4.0, total_size_mb: 1.0 }
 ```
 
-#### S7 — Edge: Telegram 未授权
+#### S4 — Happy Path: 无限缓存模式
 ```
-GIVEN Telegram 未授权
-WHEN  POST /api/channels/1/sync
-THEN  返回 400，detail 含 "not authorized"
-```
-
-#### S8 — Edge: 同步已在运行中
-```
-GIVEN 频道 id=1 有一个 running 状态的 SyncTask
-WHEN  POST /api/channels/1/sync
-THEN  返回 409，detail 含 "sync already in progress"
+GIVEN cache_max_size_mb=0
+WHEN  缓存任意大小文件
+THEN  跳过淘汰检查，直接下载，不淘汰任何文件
 ```
 
-#### S9 — Edge: 取消同步
+#### S5 — Edge: 单文件超过上限（无其他文件）
 ```
-GIVEN 频道 id=1 有一个 running 状态的 SyncTask（task_id=xxx）
-WHEN  POST /api/sync/tasks/xxx/cancel
-THEN  返回 200，SyncTask status 被设为 cancelled
-```
-
-#### S10 — Edge: 取消已完成的任务
-```
-GIVEN task_id=xxx 的 SyncTask 已完成
-WHEN  POST /api/sync/tasks/xxx/cancel
-THEN  返回 400，detail 含 "not running"
+GIVEN cache_max_size_mb=1, 当前缓存 0MB, 新文件 5MB
+WHEN  缓存该文件
+THEN  预检查：1 > 0 → 不下载，返回 507
 ```
 
-**缩略图任务队列 (Step 6)**:
-
-#### S1 — Happy Path: 手动触发单文件缩略图
+#### S6 — Edge: 空间完全不够
 ```
-GIVEN file id=1 存在于 DB，type=photo，Telegram 已授权，已缓存
-WHEN  POST /api/files/1/thumbnail
-THEN  返回 202 {job_id}，worker 生成缩略图 → thumbnails/1/1.jpg，
-     File.thumb_path 更新，ThumbJob status → completed
-```
-
-#### S2 — Happy Path: 查询缩略图任务列表（支持状态过滤）
-```
-GIVEN 有 5 个 thumb_jobs (2 pending, 1 processing, 2 completed)
-WHEN  GET /api/thumbnails/jobs?status=pending
-THEN  返回 200，仅 2 条 pending 记录，按创建时间倒序
+GIVEN cache_max_size_mb=1, 当前缓存 1MB, 新文件 5MB
+WHEN  缓存该文件
+THEN  预检查：1 + 5 = 6 > 1，需释放 5MB
+      但总计只有 1MB 可释放 → 返回 507
+      不下载（避免浪费带宽）
 ```
 
-#### S3 — Happy Path: 批量提交缩略图任务
+#### S7 — Edge: 淘汰时磁盘文件不存在
 ```
-GIVEN 有 5 个 files (id=1..5) 都没有缩略图
-WHEN  POST /api/thumbnails/generate-batch {file_ids: [1,2,3,4,5]}
-THEN  返回 202 {job_ids: [...]}，5 个 ThumbJobs 创建，按优先级入队
-```
-
-#### S4 — Happy Path: 查看单个任务详情
-```
-GIVEN job_id=xxx，status=completed，thumb_path="1/42.jpg"
-WHEN  GET /api/thumbnails/jobs/xxx
-THEN  返回 200，含所有字段 + 可直接访问的 thumb_url
+GIVEN file_a 在 DB 中 is_cached=true，但磁盘文件已被手动删除
+WHEN  淘汰 file_a
+THEN  更新 DB（is_cached=false, cache_path=null），不崩溃
+      继续淘汰下一个 LRU 文件
+      日志 warn："cached file missing on disk: {path}"
 ```
 
-#### S5 — Happy Path: 缩略图整体统计
+#### S8 — Edge: 动态修改上限后超额
 ```
-GIVEN 10 pending + 5 processing + 50 completed + 3 failed
-WHEN  GET /api/thumbnails/stats
-THEN  返回 {pending: 10, processing: 5, completed: 50, failed: 3}
-```
-
-#### S6 — Edge: 文件不存在
-```
-GIVEN file id=999 不存在
-WHEN  POST /api/files/999/thumbnail
-THEN  返回 404
-```
-
-#### S7 — Edge: 重复提交
-```
-GIVEN file id=1 已有 pending/processing 的 ThumbJob
-WHEN  POST /api/files/1/thumbnail
-THEN  返回 409，detail 含 "already has a pending or processing thumbnail job"
-```
-
-#### S8 — Edge: 取消等待中的任务
-```
-GIVEN job_id=xxx，status=pending
-WHEN  POST /api/thumbnails/jobs/xxx/cancel
-THEN  返回 200，status → cancelled，从队列移除（或 worker 检测跳过）
-```
-
-#### S9 — Edge: 取消已完成的任务
-```
-GIVEN job_id=xxx，status=completed
-WHEN  POST /api/thumbnails/jobs/xxx/cancel
-THEN  返回 400，detail 含 "not pending or processing"
-```
-
-#### S10 — Edge: 生成失败后重试成功
-```
-GIVEN file id=1，首次生成失败 "download timeout"，attempt=1，max_retries=3
-WHEN  worker 重试成功
-THEN  status → completed，attempt=2，worker 不再次重试
-```
-
-#### S11 — Edge: 达到最大重试次数
-```
-GIVEN file id=1，已失败 3 次，attempt=3
-WHEN  worker 再次尝试（attempt >= max_retries）
-THEN  不再重试，status 保持 failed，error_msg 保留
-```
-
-#### S12 — Edge: 队列空闲 → 自动从 DB 恢复
-```
-GIVEN 服务重启前有 3 个 pending ThumbJobs 留在 DB
-WHEN  服务启动，worker pool 初始化
-THEN  自动加载 3 个 pending jobs 入队，按优先级排序
+GIVEN 初始 cache_max_size_mb=10, 当前缓存 2MB
+WHEN  通过 DB 修改 cache_max_size_mb=1
+THEN  下一次缓存操作读取 settings（含 DB 覆盖值）→ 1MB
+      发现 2 > 1，触发淘汰至 ≤1MB
 ```
 
 ### 场景→测试映射
 
-**同步引擎**:
-
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
-| S1 | 正常同步 | `test_sync_full` | 集成 |
-| S2 | 增量同步 | `test_sync_incremental` | 集成 |
-| S3 | 频道无文件消息 | `test_sync_empty_channel` | 集成 |
-| S4 | 查询任务列表 | `test_list_sync_tasks` | 单元 |
-| S5 | 查询单个任务 | `test_get_sync_task` | 单元 |
-| S6 | 频道不存在 | `test_sync_channel_not_found` | 单元 |
-| S7 | 未授权 | `test_sync_unauthorized` | 单元 |
-| S8 | 同步进行中冲突 | `test_sync_already_running` | 单元 |
-| S9 | 取消同步 | `test_cancel_sync_task` | 单元 |
-| S10 | 取消已完成任务 | `test_cancel_non_running_task` | 单元 |
+| S1 | 下载触发 LRU 淘汰 | `test_evict_on_pre_check` | 集成 |
+| S2 | 查看缓存统计 | `test_cache_stats` / `test_cache_stats_empty` | 单元 |
+| S3 | 手动淘汰 | `test_manual_evict` / `test_manual_evict_already_under` | 单元 |
+| S4 | 无限缓存模式 | `test_unlimited_cache` / `test_unlimited_cache_evict_manual` | 单元 |
+| S5 | 单文件超限（无其他文件）| `test_single_file_exceeds_limit` / `test_single_file_exceeds_limit_with_other_files` | 单元 |
+| S6 | 空间完全不够 | `test_insufficient_space` / `test_insufficient_space_no_evictable` | 单元 |
+| S7 | 淘汰时文件缺失 | `test_evict_missing_file` | 单元 |
+| S8 | 动态修改上限 | `test_dynamic_limit` | 集成 |
 
-**缩略图任务队列**:
-
-| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
-|---------|---------|-------------|------|
-| S1 | 手动触发单文件 | `test_trigger_single_file` | 集成 |
-| S2 | 查询任务列表过滤 | `test_list_jobs_with_filter` | 单元 |
-| S3 | 批量提交 | `test_generate_batch` | 集成 |
-| S4 | 查看单个任务 | `test_get_job_detail` | 单元 |
-| S5 | 统计概览 | `test_stats` | 单元 |
-| S6 | 文件不存在 | `test_trigger_file_not_found` | 单元 |
-| S7 | 重复提交冲突 | `test_trigger_duplicate_job` | 单元 |
-| S8 | 取消等待中任务 | `test_cancel_pending_job` | 单元 |
-| S9 | 取消已完成任务 | `test_cancel_completed_job` | 单元 |
-| S10 | 失败后重试成功 | `test_retry_success` | 单元 |
-| S11 | 达到最大重试 | `test_retry_exhausted` | 单元 |
-| S12 | 启动时恢复 pending | `test_load_pending_on_startup` | 集成 |
+- 额外测试：`test_evict_respects_lru_order`、`test_mark_accessed`、`test_post_download_check_evicts_if_over`、`test_no_eviction_when_under_limit`
 
 ---
 
@@ -309,13 +158,14 @@ tg_file_viewer/
 │   ├── sync.py          # ✅ 同步触发/管理: trigger(202), tasks, cancel
 │   ├── thumbnails.py    # ✅ 缩略图任务管理: trigger, batch, list, stats, cancel
 │   └── config.py        # ⏳ 配置管理API
+│   └── cache.py          # ✅ 缓存统计 + 手动淘汰 API
 ├── middleware/           # 中间件层
 │   ├── logging.py       # ✅ 请求日志: method + path + status + 耗时ms
 ├── services/            # 业务逻辑层
 │   ├── telegram_client.py  # ✅ TelegramService: Telethon封装, AuthState状态机, 全局单例
 │   ├── sync_engine.py      # ✅ 同步引擎 (iter_messages + 去重 + 批量INSERT)
 │   ├── task_queue.py       # ✅ 生产者-消费者 PriorityQueue 缩略图任务池
-│   └── cache_manager.py    # ⏳ LRU缓存, 动态上限, 手动触发
+│   └── cache_manager.py    # ✅ LRU淘汰, 动态上限, 手动触发
 ├── tests/               # 测试文件 (与源文件一一对应)
 │   ├── conftest.py         # fixtures: session-scoped建库, function-scoped reset tables
 │   ├── test_database.py    # ✅ 8 tests
@@ -397,7 +247,7 @@ TelegramService.auth_state: Enum
 | 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ |
 | 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ |
 | 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ |
-| 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ |
+| 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ |
 | 8 | 配置管理 API (热更新 DB config) | ~8 | ⏳ |
 | 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ |
 | 10 | Docker + HF Space 部署 | ~5 | ⏳ |

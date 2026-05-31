@@ -322,3 +322,52 @@
 ### 测试统计
 - 新增: 24/24 ✅ (task_queue 11 + thumbnails_api 13)
 - **总计: 151/151 PASS ✅**
+
+---
+
+## Step 7: 缓存管理器 — LRU 淘汰 + 动态上限 ✅ 17/17 PASS
+
+### 新增功能
+- **`File` 模型新增列**: `cached_at` / `accessed_at` (DateTime, nullable) — 用于 LRU 淘汰追踪
+- **`CacheManager` 服务**: LRU 淘汰策略 (accessed_at ASC)、动态上限实时读取、磁盘文件缺失容错
+- **`GET /api/cache/stats`**: 缓存统计概览（总量、文件数、使用率）
+- **`POST /api/cache/evict`**: 手动触发 LRU 淘汰至配置上限
+- **`_ensure_cached` 集成**: 下载前预检查 + 下载后后检查，两阶段淘汰防止磁盘撑满
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `services/cache_manager.py` | LRU 淘汰引擎：预检查、后检查、动态上限、缺失容错 |
+| `api/cache.py` | 缓存管理 API：stats + manual evict |
+| `tests/test_cache_manager.py` | 缓存管理器测试 (17 tests) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `models.py` | `File` 表新增 `cached_at`、`accessed_at` 列 (nullable) |
+| `api/files.py` | `_ensure_cached` 集成 CacheManager（预检查 → 下载 → 后检查）；`_file_to_dict` 暴露新时间戳字段 |
+| `main.py` | 注册 `cache_router`；lifespan 中创建 cache 目录 |
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 下载触发 LRU 淘汰 | `test_evict_on_pre_check` | 集成 |
+| S2 | 查看缓存统计 | `test_cache_stats` / `test_cache_stats_empty` | 单元 |
+| S3 | 手动淘汰 | `test_manual_evict` / `test_manual_evict_already_under` | 单元 |
+| S4 | 无限缓存模式 | `test_unlimited_cache` / `test_unlimited_cache_evict_manual` | 单元 |
+| S5 | 单文件超限（无其他文件）| `test_single_file_exceeds_limit` / `test_single_file_exceeds_limit_with_other_files` | 单元 |
+| S6 | 空间完全不够 | `test_insufficient_space` / `test_insufficient_space_no_evictable` | 单元 |
+| S7 | 淘汰时文件缺失 | `test_evict_missing_file` | 单元 |
+| S8 | 动态修改上限 | `test_dynamic_limit` | 集成 |
+
+### 关键设计决策
+- **两阶段淘汰**: 下载前预检查（`check_and_evict` with new_file_size）避免浪费带宽；下载后后检查（`post_download_check`）处理文件大小不准确场景
+- **LRU 排序**: `COALESCE(accessed_at, '1970-01-01')` — NULL 值视为最旧，最先淘汰
+- **实时读取**: 每次操作通过 `get_settings(db_session)` 实时读取 `cache_max_size_mb`，支持热更新
+- **缺失容错**: 淘汰时磁盘文件不存在 → 跳过删除，只清 DB 字段，继续下一个
+- **无限模式**: `cache_max_size_mb=0` 跳过所有检查和淘汰，生产环境建议设置合理值
+- **DB 统计代替磁盘扫描**: `SUM(file_size) WHERE is_cached=true` 计算缓存大小，避免遍历文件系统
+
+### 测试统计
+- Step 7 新增: 17/17 ✅
+- **预期总计: 168/168 PASS** (151 + 17)
