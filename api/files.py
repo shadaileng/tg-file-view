@@ -2,6 +2,7 @@
 
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -44,6 +45,8 @@ def _file_to_dict(file_: FileModel) -> dict:
         "thumb_type": file_.thumb_type,
         "cache_path": file_.cache_path,
         "is_cached": file_.is_cached,
+        "cached_at": file_.cached_at.isoformat() if file_.cached_at else None,
+        "accessed_at": file_.accessed_at.isoformat() if file_.accessed_at else None,
         "tg_ref": file_.tg_ref,
         "created_at": file_.created_at.isoformat() if file_.created_at else None,
     }
@@ -126,13 +129,21 @@ async def _ensure_cached(
 ) -> Path:
     """Ensure the file is cached locally. Downloads from Telegram if needed.
 
+    Integrates with CacheManager for LRU eviction and dynamic size limits:
+    1. If already cached: refresh accessed_at and return path.
+    2. If not cached: pre-check space -> evict if needed -> download ->
+       update DB with timestamps -> post-check overflow.
+
     Returns the full path to the cached file.
     Updates file_ DB fields.
     """
-    # Check if already cached on disk
+    from services.cache_manager import CacheManager
+
+    # Check if already cached on disk — refresh LRU timestamp
     if file_.is_cached and file_.cache_path:
         full_path = CACHE_DIR / file_.cache_path
         if full_path.exists():
+            await CacheManager.mark_accessed(db, file_)
             return full_path
 
     # Need to download
@@ -140,6 +151,14 @@ async def _ensure_cached(
     channel = await db.get(ChannelModel, file_.channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Channel not found in database")
+
+    # Pre-check: ensure cache has room (may evict LRU files)
+    # If file_size is unknown (0), skip pre-check; will catch overflow
+    # at post-check.
+    if file_.file_size > 0:
+        await CacheManager.check_and_evict(
+            db, new_file_size=file_.file_size, new_file_id=file_.id
+        )
 
     safe_name = _safe_filename(file_.file_name)
     relative_path = f"{file_.channel_id}/{file_.id}_{safe_name}"
@@ -149,11 +168,19 @@ async def _ensure_cached(
         svc, channel.tg_id, file_.message_id, full_path
     )
 
-    # Update DB record
+    # Update DB record with cache info and timestamps
+    now = datetime.utcnow()
     file_.cache_path = relative_path
     file_.is_cached = True
     file_.file_size = size
+    file_.cached_at = now
+    file_.accessed_at = now
     await db.commit()
+
+    # Post-check: ensure cache is under limit (downloaded file may be
+    # larger than estimated file_size, or concurrent downloads may have
+    # pushed total over limit).
+    await CacheManager.post_download_check(db)
 
     return full_path
 

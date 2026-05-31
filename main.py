@@ -55,6 +55,10 @@ async def lifespan(app: FastAPI):
                 settings.tg_api_id,
                 "yes" if settings.tg_proxy_url else "no")
 
+    # Initialize cache manager directories
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Cache directory: {}", cache_dir)
+
     # Initialize thumbnail worker pool
     from services.task_queue import ThumbnailWorkerPool, set_thumb_worker_pool
 
@@ -112,12 +116,14 @@ app.mount("/cache", StaticFiles(directory=str(cache_dir)), name="cache")
 
 # Register API routers
 from api.auth import router as auth_router
+from api.cache import router as cache_router
 from api.channels import router as channels_router
 from api.files import router as files_router
 from api.sync import router as sync_router
 from api.thumbnails import router as thumb_router
 
 app.include_router(auth_router)
+app.include_router(cache_router)
 app.include_router(channels_router)
 app.include_router(files_router)
 app.include_router(sync_router)
