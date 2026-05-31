@@ -55,10 +55,24 @@ async def lifespan(app: FastAPI):
                 settings.tg_api_id,
                 "yes" if settings.tg_proxy_url else "no")
 
+    # Initialize thumbnail worker pool
+    from services.task_queue import ThumbnailWorkerPool, set_thumb_worker_pool
+
+    thumb_pool = ThumbnailWorkerPool(
+        num_workers=settings.thumb_workers,
+        thumb_dir=str(thumb_dir),
+        cache_dir=str(cache_dir),
+        max_width=settings.thumb_max_width,
+        max_height=settings.thumb_max_height,
+    )
+    set_thumb_worker_pool(thumb_pool)
+    await thumb_pool.start()
+
     yield
 
-    # Shutdown
+    # Shutdown: stop worker pool first, then DB
     logger.info("Shutting down...")
+    await thumb_pool.stop()
     from database import engine
     await engine.dispose()
     logger.info("Shutdown complete")
@@ -101,11 +115,13 @@ from api.auth import router as auth_router
 from api.channels import router as channels_router
 from api.files import router as files_router
 from api.sync import router as sync_router
+from api.thumbnails import router as thumb_router
 
 app.include_router(auth_router)
 app.include_router(channels_router)
 app.include_router(files_router)
 app.include_router(sync_router)
+app.include_router(thumb_router)
 
 
 @app.get("/")

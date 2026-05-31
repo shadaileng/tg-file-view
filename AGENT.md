@@ -4,9 +4,9 @@
 
 ---
 
-## Current Phase: Step 5 — 同步引擎
+## Current Phase: Step 6 — 缩略图任务队列 (PriorityQueue)
 
-**分支**: `feat/sync-engine`
+**分支**: `feat/thumbnail-task-queue`
 
 ### API 端点设计
 
@@ -16,6 +16,12 @@
 | `GET` | `/api/channels/{channel_id}/sync/tasks` | 频道同步任务列表 |
 | `GET` | `/api/sync/tasks/{task_id}` | 获取单个同步任务详情 |
 | `POST` | `/api/sync/tasks/{task_id}/cancel` | 取消正在运行的同步 |
+| `POST` | `/api/files/{file_id}/thumbnail` | 手动触发单文件缩略图生成 |
+| `POST` | `/api/thumbnails/generate-batch` | 批量提交缩略图任务 |
+| `GET` | `/api/thumbnails/jobs` | 任务列表 (支持 ?status= 过滤) |
+| `GET` | `/api/thumbnails/jobs/{job_id}` | 单个任务详情 |
+| `GET` | `/api/thumbnails/stats` | 统计概览 |
+| `POST` | `/api/thumbnails/jobs/{job_id}/cancel` | 取消任务 |
 
 ### 变更范围矩阵
 
@@ -23,13 +29,16 @@
 |--------|---------|:---:|
 | 新增 `services/sync_engine.py` (同步引擎) | 服务层 | 否 |
 | 新增 `api/sync.py` (同步触发/管理路由) | API 层 | 否 |
-| 在 `main.py` 注册 `sync_router` | 入口 | 否 |
-| 新增 `tests/test_sync_engine.py` | 测试 | 否 |
-| 新增 `tests/test_sync_api.py` | 测试 | 否 |
+| 新增 `services/task_queue.py` (worker pool + 缩略图生成) | 服务层 | 否 |
+| 新增 `api/thumbnails.py` (缩略图任务管理路由) | API 层 | 否 |
+| 修改 `main.py` — 注册 sync_router + thumb_router + lifespan 启停 worker pool | 入口 | 否 |
+| 新增 `tests/test_sync_engine.py`、`tests/test_sync_api.py` | 测试 | 否 |
+| 新增 `tests/test_task_queue.py`、`tests/test_thumbnails_api.py` | 测试 | 否 |
 | 更新 AGENT.md / CHANGELOG.md | 文档 | 否 |
 
 ### 核心设计要点
 
+**同步引擎 (Step 5)**:
 1. **消息遍历**：使用 Telethon `iter_messages()` 遍历频道历史消息
 2. **媒体提取**：提取 photo/video/document/audio/voice/sticker 等媒体消息
 3. **去重策略**：利用 `files` 表的 `UniqueConstraint(channel_id, message_id)` 批量查询后 INSERT
@@ -39,7 +48,19 @@
 7. **可取消**：通过设置 `SyncTask.status = "cancelled"` + 同步循环检测实现
 8. **后台异步**：API 创建 SyncTask 后通过 `asyncio.create_task()` 后台运行同步
 
+**缩略图任务队列 (Step 6)**:
+1. **生产者-消费者**: 使用 `asyncio.PriorityQueue` 作为任务队列，Worker 从队列消费
+2. **DB 持久化**: ThumbJob 记录在数据库中，服务重启时从 DB 恢复 pending 任务
+3. **优先级**: photo(3) > sticker(4) > video(4) > document(5)，1 最高优先
+4. **仅支持图片缩略图**（本步）: 使用 Pillow 生成，视频需要 ffmpeg（未来）
+5. **失败重试**: 最多 3 次，指数退避 (1s, 2s, 4s)
+6. **缩略图目录**: `thumbnails/{channel_id}/{file_id}.jpg`
+7. **文件下载**: 生成缩略图前先确保文件已缓存（否则从 Telegram 下载）
+8. **Workers 在 lifespan 启停**: 启动时创建 N 个 worker task + 恢复 pending jobs；关闭时取消 worker
+
 ### 边界条件与失败模式
+
+**同步引擎**:
 
 | # | 场景 | 预期行为 |
 |---|------|---------|
@@ -51,7 +72,22 @@
 | E6 | 同一频道重复触发同步（并发） | 检测 running 状态，返回 409 |
 | E7 | 大量消息 | 分批拉取 + 批量 commit，不 OOM |
 
+**缩略图任务队列**:
+
+| # | 场景 | 预期行为 |
+|---|------|---------|
+| E1 | 无 pending jobs | Workers 空闲等待，不崩溃，不忙轮询 CPU |
+| E2 | 同一文件重复提交 | 检测已有 pending/processing 的 ThumbJob → 409 |
+| E3 | 文件下载失败 | retry ≤3 次，失败后标记 status=failed + error_msg |
+| E4 | 不支持的格式 | 标记 failed，记录 "unsupported format" |
+| E5 | Workers 全忙 | 任务排队，按优先级顺序处理 |
+| E6 | 并发大量提交 | PriorityQueue 保证顺序，不 OOM |
+| E7 | 优雅关闭 | Workers 完成当前任务后退出，pending 保留 DB |
+| E8 | 文件未缓存 | 先下载到 cache/，再生成缩略图 |
+
 ### GIVEN/WHEN/THEN 场景
+
+**同步引擎 (Step 5)**:
 
 #### S1 — Happy Path: 正常同步
 ```
@@ -123,7 +159,96 @@ WHEN  POST /api/sync/tasks/xxx/cancel
 THEN  返回 400，detail 含 "not running"
 ```
 
+**缩略图任务队列 (Step 6)**:
+
+#### S1 — Happy Path: 手动触发单文件缩略图
+```
+GIVEN file id=1 存在于 DB，type=photo，Telegram 已授权，已缓存
+WHEN  POST /api/files/1/thumbnail
+THEN  返回 202 {job_id}，worker 生成缩略图 → thumbnails/1/1.jpg，
+     File.thumb_path 更新，ThumbJob status → completed
+```
+
+#### S2 — Happy Path: 查询缩略图任务列表（支持状态过滤）
+```
+GIVEN 有 5 个 thumb_jobs (2 pending, 1 processing, 2 completed)
+WHEN  GET /api/thumbnails/jobs?status=pending
+THEN  返回 200，仅 2 条 pending 记录，按创建时间倒序
+```
+
+#### S3 — Happy Path: 批量提交缩略图任务
+```
+GIVEN 有 5 个 files (id=1..5) 都没有缩略图
+WHEN  POST /api/thumbnails/generate-batch {file_ids: [1,2,3,4,5]}
+THEN  返回 202 {job_ids: [...]}，5 个 ThumbJobs 创建，按优先级入队
+```
+
+#### S4 — Happy Path: 查看单个任务详情
+```
+GIVEN job_id=xxx，status=completed，thumb_path="1/42.jpg"
+WHEN  GET /api/thumbnails/jobs/xxx
+THEN  返回 200，含所有字段 + 可直接访问的 thumb_url
+```
+
+#### S5 — Happy Path: 缩略图整体统计
+```
+GIVEN 10 pending + 5 processing + 50 completed + 3 failed
+WHEN  GET /api/thumbnails/stats
+THEN  返回 {pending: 10, processing: 5, completed: 50, failed: 3}
+```
+
+#### S6 — Edge: 文件不存在
+```
+GIVEN file id=999 不存在
+WHEN  POST /api/files/999/thumbnail
+THEN  返回 404
+```
+
+#### S7 — Edge: 重复提交
+```
+GIVEN file id=1 已有 pending/processing 的 ThumbJob
+WHEN  POST /api/files/1/thumbnail
+THEN  返回 409，detail 含 "already has a pending or processing thumbnail job"
+```
+
+#### S8 — Edge: 取消等待中的任务
+```
+GIVEN job_id=xxx，status=pending
+WHEN  POST /api/thumbnails/jobs/xxx/cancel
+THEN  返回 200，status → cancelled，从队列移除（或 worker 检测跳过）
+```
+
+#### S9 — Edge: 取消已完成的任务
+```
+GIVEN job_id=xxx，status=completed
+WHEN  POST /api/thumbnails/jobs/xxx/cancel
+THEN  返回 400，detail 含 "not pending or processing"
+```
+
+#### S10 — Edge: 生成失败后重试成功
+```
+GIVEN file id=1，首次生成失败 "download timeout"，attempt=1，max_retries=3
+WHEN  worker 重试成功
+THEN  status → completed，attempt=2，worker 不再次重试
+```
+
+#### S11 — Edge: 达到最大重试次数
+```
+GIVEN file id=1，已失败 3 次，attempt=3
+WHEN  worker 再次尝试（attempt >= max_retries）
+THEN  不再重试，status 保持 failed，error_msg 保留
+```
+
+#### S12 — Edge: 队列空闲 → 自动从 DB 恢复
+```
+GIVEN 服务重启前有 3 个 pending ThumbJobs 留在 DB
+WHEN  服务启动，worker pool 初始化
+THEN  自动加载 3 个 pending jobs 入队，按优先级排序
+```
+
 ### 场景→测试映射
+
+**同步引擎**:
 
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
@@ -137,6 +262,23 @@ THEN  返回 400，detail 含 "not running"
 | S8 | 同步进行中冲突 | `test_sync_already_running` | 单元 |
 | S9 | 取消同步 | `test_cancel_sync_task` | 单元 |
 | S10 | 取消已完成任务 | `test_cancel_non_running_task` | 单元 |
+
+**缩略图任务队列**:
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 手动触发单文件 | `test_trigger_single_file` | 集成 |
+| S2 | 查询任务列表过滤 | `test_list_jobs_with_filter` | 单元 |
+| S3 | 批量提交 | `test_generate_batch` | 集成 |
+| S4 | 查看单个任务 | `test_get_job_detail` | 单元 |
+| S5 | 统计概览 | `test_stats` | 单元 |
+| S6 | 文件不存在 | `test_trigger_file_not_found` | 单元 |
+| S7 | 重复提交冲突 | `test_trigger_duplicate_job` | 单元 |
+| S8 | 取消等待中任务 | `test_cancel_pending_job` | 单元 |
+| S9 | 取消已完成任务 | `test_cancel_completed_job` | 单元 |
+| S10 | 失败后重试成功 | `test_retry_success` | 单元 |
+| S11 | 达到最大重试 | `test_retry_exhausted` | 单元 |
+| S12 | 启动时恢复 pending | `test_load_pending_on_startup` | 集成 |
 
 ---
 

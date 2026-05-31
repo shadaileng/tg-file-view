@@ -274,3 +274,51 @@
 - Step 1-4: 103/103 ✅
 - Step 5 新增: 24/24 ✅ (sync_engine 12 + sync_api 12)
 - **总计: 127/127 PASS ✅**
+
+---
+
+## Step 6: 缩略图任务队列 (PriorityQueue) ⏳
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `services/task_queue.py` | 生产者-消费者 PriorityQueue worker pool + Pillow 缩略图生成 |
+| `api/thumbnails.py` | 缩略图 API: 手动触发、批量提交、任务列表、详情、统计、取消 |
+| `tests/test_task_queue.py` | Worker pool 测试 |
+| `tests/test_thumbnails_api.py` | 缩略图 API 测试 |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 注册 `thumb_router`；lifespan 中启停 worker pool |
+| `AGENT.md` | Step 6 场景文档 (S1-S12) + 场景→测试映射 |
+| `CHANGELOG.md` | 本条目 |
+
+### 关键设计决策
+- **asyncio.PriorityQueue**: 低延迟、无忙等待；服务重启时从 DB 恢复
+- **Worker pool**: 在 lifespan 启停，与 TelegramService 一致的生命周期模式
+- **缩略图目录**: `thumbnails/{channel_id}/{file_id}.jpg`（与 cache 目录结构一致）
+- **仅支持图片缩略图**: 本步只处理 photo/sticker 类型（Pillow）；视频需 ffmpeg（未来）
+- **优先级**: photo(3) > sticker(4) > video(4) > document(5)
+- **失败重试**: 3 次 + 指数退避 (1s, 2s, 4s)
+- **文件缓存集成**: 生成缩略图前复用 `api/files.py` 的 `_download_from_telegram` 确保文件已缓存
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 手动触发单文件 | `test_trigger_single_file` | 集成 |
+| S2 | 查询任务列表过滤 | `test_list_jobs_with_filter` | 单元 |
+| S3 | 批量提交 | `test_generate_batch` | 集成 |
+| S4 | 查看单个任务 | `test_get_job_detail` | 单元 |
+| S5 | 统计概览 | `test_stats` | 单元 |
+| S6 | 文件不存在 | `test_trigger_file_not_found` | 单元 |
+| S7 | 重复提交冲突 | `test_trigger_duplicate_job` | 单元 |
+| S8 | 取消等待中任务 | `test_cancel_pending_job` | 单元 |
+| S9 | 取消已完成任务 | `test_cancel_completed_job` | 单元 |
+| S10 | 失败后重试成功 | `test_retry_success` | 单元 |
+| S11 | 达到最大重试 | `test_retry_exhausted` | 单元 |
+| S12 | 启动时恢复 pending | `test_load_pending_on_startup` | 集成 |
+
+### 测试统计
+- 新增: 24/24 ✅ (task_queue 11 + thumbnails_api 13)
+- **总计: 151/151 PASS ✅**
