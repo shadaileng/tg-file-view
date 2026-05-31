@@ -1,17 +1,43 @@
+# ── Python ──
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# ── 虚拟环境 ──
+.venv/
+venv/
+
+# ── 环境变量 ──
 .env
+
+# ── 运行时数据 ──
 data/
+
+# ── Telegram ──
 *.session
 *.session-journal
+
+# ── IDE / OS ──
 .vscode/
 .idea/
-dist/
-*.egg-info/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# ── 前端 ──
 node_modules/
 frontend/dist/
-.pytest_cache/
+
+# ── 测试 / 覆盖率 ──
 .coverage
+coverage.xml
 htmlcov/
-__pycache__
+
+# ── 日志 ──
+*.log
