@@ -2,7 +2,7 @@
 
 > 单体 Telegram 频道文件预览服务 — 替代三服务架构，整合文件同步、预览、缩略图生成、缓存管理。
 
-[![Tests](https://img.shields.io/badge/tests-70/70%20PASS-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-151/151%20PASS-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -77,17 +77,17 @@ tg_file_viewer/
 ├── api/                    # API 路由层
 │   ├── __init__.py
 │   ├── auth.py             # 认证路由 (已实现 ✅)
-│   ├── channels.py         # 频道管理 (待实现)
-│   ├── files.py            # 文件列表/预览 (待实现)
-│   ├── sync.py             # 同步触发/管理 (待实现)
-│   ├── thumbnails.py       # 缩略图管理 (待实现)
+│   ├── channels.py         # 频道管理 (已实现 ✅)
+│   ├── files.py            # 文件列表/预览 (已实现 ✅)
+│   ├── sync.py             # 同步触发/管理 (已实现 ✅)
+│   ├── thumbnails.py       # 缩略图管理 (已实现 ✅)
 │   └── config.py           # 配置管理 API (待实现)
 │
 ├── services/               # 业务逻辑层
 │   ├── __init__.py
 │   ├── telegram_client.py  # Telethon 客户端封装 (已实现 ✅)
-│   ├── sync_engine.py      # 同步引擎 (待实现)
-│   ├── task_queue.py       # 生产者-消费者任务池 (待实现)
+│   ├── sync_engine.py      # 同步引擎 (已实现 ✅)
+│   ├── task_queue.py       # 生产者-消费者任务池 (已实现 ✅)
 │   └── cache_manager.py    # LRU 缓存管理器 (待实现)
 │
 ├── frontend/               # Vue 3 前端 (待实现)
@@ -99,7 +99,14 @@ tg_file_viewer/
 │   ├── test_models.py      # 模型测试 (12)
 │   ├── test_telegram_client.py  # Telegram 客户端测试 (15)
 │   ├── test_auth_api.py    # 认证 API 测试 (9)
-│   └── test_logging.py     # 日志系统测试 (13)
+│   ├── test_logging.py     # 日志系统测试 (13)
+│   ├── test_channels_api.py     # 频道 API 测试 (19)
+│   ├── test_files_api.py        # 文件 API 测试 (14)
+│   ├── test_sync_engine.py      # 同步引擎测试 (12)
+│   ├── test_sync_api.py         # 同步 API 测试 (12)
+│   ├── test_task_queue.py       # 任务队列测试 (11)
+│   ├── test_thumbnails_api.py   # 缩略图 API 测试 (13)
+│   └── test_data/          # 测试数据
 │
 ├── data/                   # 运行时数据
 │   ├── db.sqlite           # SQLite 数据库
@@ -193,26 +200,29 @@ AppConfig  — key-value 动态配置
 | POST | `/api/auth/verify-2fa` | 两步验证 |
 | GET | `/api/auth/status` | 认证状态 |
 | POST | `/api/auth/logout` | 登出 |
-
-### 待实现 ⏳
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
 | GET/POST | `/api/channels` | 频道列表 / 新增 |
+| GET | `/api/channels/discover` | 发现频道 |
 | GET/DELETE | `/api/channels/{id}` | 频道详情 / 删除 |
 | GET | `/api/channels/{id}/files` | 频道文件列表 |
 | GET | `/api/files/{id}` | 文件详情 |
 | GET | `/api/files/{id}/download` | 文件下载 |
 | POST | `/api/files/{id}/cache` | 主动缓存 |
 | DELETE | `/api/files/{id}/cache` | 清除缓存 |
-| POST | `/api/sync/{channel_id}` | 触发同步 |
-| GET | `/api/sync/tasks` | 同步任务列表 |
+| POST | `/api/channels/{id}/sync` | 触发同步 |
+| GET | `/api/channels/{id}/sync/tasks` | 频道任务列表 |
 | GET | `/api/sync/tasks/{id}` | 任务详情 |
 | POST | `/api/sync/tasks/{id}/cancel` | 取消同步 |
-| GET | `/api/thumbnails/jobs` | 缩略图任务列表 |
-| POST | `/api/thumbnails/jobs/{id}/cancel` | 取消缩略图任务 |
-| POST | `/api/thumbnails/jobs/{id}/retry` | 重试缩略图任务 |
-| DELETE | `/api/thumbnails/{id}` | 删除缩略图文件 |
+| POST | `/api/files/{id}/thumbnail` | 手动生成缩略图 |
+| POST | `/api/thumbnails/generate-batch` | 批量缩略图 |
+| GET | `/api/thumbnails/jobs` | 任务列表 (状态过滤) |
+| GET | `/api/thumbnails/jobs/{id}` | 任务详情 |
+| GET | `/api/thumbnails/stats` | 统计概览 |
+| POST | `/api/thumbnails/jobs/{id}/cancel` | 取消任务 |
+
+### 待实现 ⏳
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
 | GET | `/api/config` | 获取所有配置 |
 | PUT | `/api/config/{key}` | 更新配置项 |
 
@@ -226,16 +236,16 @@ AppConfig  — key-value 动态配置
 |------|------|--------|------|
 | Step 1 | 项目骨架 — 目录、数据库、配置、模型 | 30 | ✅ 已完成 |
 | Step 2 | Telegram 客户端 + 认证 API | 23 | ✅ 已完成 |
-| Step 3 | 频道管理 API | ~12 | ⏳ 待实施 |
-| Step 4 | 文件列表 / 下载 API | ~14 | ⏳ 待实施 |
-| Step 5 | 同步引擎 (Telethon iter_messages) | ~16 | ⏳ 待实施 |
-| Step 6 | 缩略图任务队列 (生产者-消费者) | ~18 | ⏳ 待实施 |
+| Step 3 | 频道管理 API (CRUD + discover) | 19 | ✅ 已完成 |
+| Step 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ 已完成 |
+| Step 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ 已完成 |
+| Step 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ 已完成 |
 | Step 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ 待实施 |
 | Step 8 | 配置管理 API (热更新) | ~8 | ⏳ 待实施 |
 | Step 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ 待实施 |
 | Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ⏳ 待实施 |
 
-**当前进度**: 2/10 步完成，70 个测试全部通过。
+**当前进度**: 6/10 步完成，151 个测试全部通过。
 
 ---
 
@@ -309,7 +319,7 @@ uv run pytest tests/test_auth_api.py -v
 uv run pytest tests/ --cov=. --cov-report=term
 
 # 当前测试统计
-# ✅ 70/70 PASS (Step 1: 30 + Step 2: 27 + Step 2.5: 13)
+# ✅ 151/151 PASS (Step 1-6)
 ```
 
 测试采用 **pytest + pytest-asyncio**，测试数据库与生产隔离：

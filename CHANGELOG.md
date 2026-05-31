@@ -277,7 +277,7 @@
 
 ---
 
-## Step 6: 缩略图任务队列 (PriorityQueue) ⏳
+## Step 6: 缩略图任务队列 (PriorityQueue) ✅ 151/151 PASS
 
 ### 新增文件
 | 文件 | 说明 |
