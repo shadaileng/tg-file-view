@@ -1,5 +1,38 @@
 # 开发日志 (CHANGELOG)
 
+## Step 10: Docker 多阶段构建 + HF Space 部署 ✅
+
+### 变更内容
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `Dockerfile` | 新增 | 多阶段构建：node:20-alpine pnpm build → python:3.11-slim uv 运行 |
+| `.dockerignore` | 新增 | 排除文档/日志/数据/依赖缓存，保留 lock 文件确保可重现 |
+| `README.md` | 更新 | 顶部 HF Space 元数据 + Docker/HF Space 部署章节 |
+| `AGENT.md` | 更新 | 更新 Current Phase 为 Step 10 |
+| `CHANGELOG.md` | 更新 | 本条目 |
+
+### 技术决策
+| 决策 | 选择 | 说明 |
+|:---|:---|:---|
+| 构建方式 | 多阶段 Dockerfile | Stage 1: pnpm build → Stage 2: Python runtime |
+| Python 包管理 | uv sync --no-dev --frozen | 与项目一致，产物更小 |
+| 基础镜像 | python:3.11-slim | 轻量 + Pillow 系统依赖 |
+| 默认端口 | 7860 | HF Spaces 默认检测端口 |
+| 数据目录 | /data | 配合 HF Persistent Storage |
+| 前端 serve | FastAPI StaticFiles SPA | 单端口一体化部署 |
+
+### 场景覆盖
+- S1: Docker 本地构建运行 (前端构建 → Python 运行 → 健康检查通过)
+- S2: HF Space 部署 (Dockerfile 自动构建 → 访问 Space URL → API + 前端正常)
+- S3: 首次启动无数据库 (init_db 自动建表 → ensure_initialized seed 默认配置)
+- S4: 重新部署后 session 过期 (Telethon 要求重新认证 → Auth 页面登录)
+- S5: 环境变量注入 (TG_API_ID/TG_API_HASH → Settings 正确加载)
+
+### 测试
+- 全量 pytest 回归 ✅
+
+---
+
 ## feat: 新增前后端启动脚本
 
 ### 变更内容
