@@ -91,6 +91,10 @@ tg_file_viewer/
 │   ├── task_queue.py       # 生产者-消费者任务池 (已实现 ✅)
 │   └── cache_manager.py    # LRU 缓存管理器 (已实现 ✅)
 │
+├── scripts/                # 启动脚本
+│   ├── dev.sh               # 开发模式一键启动 (前后端并行)
+│   └── start.sh             # 生产模式启动 (构建前端 + 后端 serve)
+│
 ├── frontend/               # Vue 3 前端 (pnpm)
 │   ├── package.json         # Vue 3 + Vite + Tailwind + Axios
 │   ├── vite.config.js       # dev proxy /api → :8000
@@ -286,19 +290,26 @@ cp .env.example .env
 
 ### 运行
 
+#### 开发模式（前后端热重载）
+
 ```bash
-# 1. 启动后端
-uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# 一键启动：后端 (:8000) + 前端 Vite dev (:5173)
+# 自动清理端口残留、Ctrl+C 停止所有服务
+./scripts/dev.sh
 
-# 2. 启动前端开发服务器 (另一个终端)
-cd frontend && pnpm install && pnpm dev
 # 前端访问: http://localhost:5173 (API 自动代理到 :8000)
-
-# 或仅后端 + 生产模式前端:
-cd frontend && pnpm build
-uv run uvicorn main:app --host 0.0.0.0 --port 8000
-# 访问: http://localhost:8000 (SPA 一站式)
 ```
+
+#### 生产模式（单端口 SPA）
+
+```bash
+# 构建前端 + 后端 serve 静态文件
+./scripts/start.sh
+
+# 访问: http://localhost:8000 (前后端一体化)
+```
+
+> **说明**：脚本自动处理端口冲突清理。首次运行需确保 `uv` 和 `pnpm` 已安装。
 
 ### 认证
 
