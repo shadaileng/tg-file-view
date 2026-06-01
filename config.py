@@ -198,3 +198,96 @@ async def is_admin(password: str | None) -> bool:
     if password is None:
         return False
     return password == stored
+
+
+# Config keys that cannot be modified via API (Telegram credentials etc.)
+READONLY_CONFIG_KEYS: set[str] = {
+    "api_id", "api_hash", "phone", "bot_token",
+    "proxy_url", "admin_password",
+}
+
+# All registered config keys (mirrors key_to_field in get_settings)
+ALL_CONFIG_KEYS: set[str] = {
+    "api_id", "api_hash", "phone", "bot_token", "proxy_url",
+    "sync_batch_size", "sync_bulk_api_limit", "sync_delay_seconds",
+    "thumb_max_width", "thumb_max_height", "thumb_video_chunk_preview_mb",
+    "thumb_workers", "cache_max_size_mb",
+    "host", "port", "admin_password", "debug",
+}
+
+# Type and range info for value validation
+CONFIG_VALUE_SCHEMA: dict[str, dict] = {
+    "sync_batch_size":        {"type": "int", "min": 1, "max": 100000},
+    "sync_bulk_api_limit":    {"type": "int", "min": 1, "max": 100000},
+    "sync_delay_seconds":     {"type": "float", "min": 0, "max": 3600},
+    "thumb_max_width":        {"type": "int", "min": 16, "max": 4096},
+    "thumb_max_height":       {"type": "int", "min": 16, "max": 4096},
+    "thumb_video_chunk_preview_mb": {"type": "int", "min": 1, "max": 1024},
+    "thumb_workers":          {"type": "int", "min": 1, "max": 16},
+    "cache_max_size_mb":      {"type": "int", "min": 0, "max": 102400},
+    "port":                   {"type": "int", "min": 1, "max": 65535},
+    "debug":                  {"type": "bool"},
+}
+
+
+async def list_all_configs(db_session) -> list[dict]:
+    """List all registered config entries from DB (for admin/read access).
+
+    Returns only keys that are in ALL_CONFIG_KEYS, with their DB-stored values.
+    Keys not yet seeded will still appear with value="" and updated_at=None.
+    """
+    from models import AppConfig
+    from sqlalchemy import select
+
+    result = await db_session.execute(select(AppConfig))
+    rows = {r.key: r for r in result.scalars().all()}
+
+    output = []
+    for key in sorted(ALL_CONFIG_KEYS):
+        row = rows.get(key)
+        output.append({
+            "key": key,
+            "value": row.value if row else "",
+            "editable": key not in READONLY_CONFIG_KEYS,
+            "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+        })
+    return output
+
+
+def validate_config_value(key: str, value: str) -> tuple[bool, str]:
+    """Validate a config value's type and range.
+
+    Returns (is_valid, error_message).
+    """
+    schema = CONFIG_VALUE_SCHEMA.get(key)
+    if schema is None:
+        # String-type key — no schema validation needed
+        return True, ""
+
+    expected_type = schema["type"]
+
+    if expected_type == "int":
+        try:
+            v = int(value)
+        except (ValueError, TypeError):
+            return False, f"expected integer for {key}, got '{value}'"
+        if "min" in schema and v < schema["min"]:
+            return False, f"{key} must be >= {schema['min']}, got {v}"
+        if "max" in schema and v > schema["max"]:
+            return False, f"{key} must be <= {schema['max']}, got {v}"
+
+    elif expected_type == "float":
+        try:
+            v = float(value)
+        except (ValueError, TypeError):
+            return False, f"expected float for {key}, got '{value}'"
+        if "min" in schema and v < schema["min"]:
+            return False, f"{key} must be >= {schema['min']}, got {v}"
+        if "max" in schema and v > schema["max"]:
+            return False, f"{key} must be <= {schema['max']}, got {v}"
+
+    elif expected_type == "bool":
+        if value.lower() not in ("true", "false", "1", "0", "yes", "no"):
+            return False, f"expected boolean (true/false) for {key}, got '{value}'"
+
+    return True, ""

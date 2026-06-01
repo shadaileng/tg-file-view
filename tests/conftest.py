@@ -20,6 +20,7 @@ TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Import database module (engine created once)
 from database import init_db, get_session, engine, AsyncSessionLocal
+import models  # noqa: F401 - register all ORM models before table creation
 
 
 @pytest.fixture(scope="session")

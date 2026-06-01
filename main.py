@@ -118,6 +118,7 @@ app.mount("/cache", StaticFiles(directory=str(cache_dir)), name="cache")
 from api.auth import router as auth_router
 from api.cache import router as cache_router
 from api.channels import router as channels_router
+from api.config import router as config_router
 from api.files import router as files_router
 from api.sync import router as sync_router
 from api.thumbnails import router as thumb_router
@@ -125,6 +126,7 @@ from api.thumbnails import router as thumb_router
 app.include_router(auth_router)
 app.include_router(cache_router)
 app.include_router(channels_router)
+app.include_router(config_router)
 app.include_router(files_router)
 app.include_router(sync_router)
 app.include_router(thumb_router)
