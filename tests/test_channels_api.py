@@ -43,9 +43,9 @@ def _make_mock_authorized_svc():
     svc = AsyncMock()
     svc.auth_state = AuthState.AUTHORIZED  # real enum value for != comparisons
     svc.is_authorized = AsyncMock(return_value=True)
-    # get_client() is synchronous — use MagicMock (not AsyncMock attribute)
+    # get_client() is async — must be awaitable
     mock_client = AsyncMock()
-    svc.get_client = MagicMock(return_value=mock_client)
+    svc.get_client = AsyncMock(return_value=mock_client)
     return svc, mock_client
 
 

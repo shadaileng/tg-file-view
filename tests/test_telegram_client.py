@@ -105,12 +105,54 @@ class TestTelegramServiceAuthState:
         service._phone_code_hash = "test_hash"
         assert service._phone_code_hash == "test_hash"
 
-    async def test_not_authorized_initially(self, db_session):
-        """🔴 Test is_authorized returns False initially."""
+    @patch("services.telegram_client.TelegramClient")
+    async def test_not_authorized_initially(self, mock_tc, db_session):
+        """🔴 Test is_authorized returns False when no session exists."""
+        mock_client = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(return_value=False)
+        mock_tc.return_value = mock_client
+
         service = TelegramService(api_id=1, api_hash="x", phone="+86")
-        # Client not created, so should return False
         is_auth = await service.is_authorized()
         assert is_auth is False
+
+    @patch("services.telegram_client.TelegramClient")
+    async def test_is_authorized_with_valid_session(self, mock_tc, db_session):
+        """🔴 S1: is_authorized returns True when persisted session is valid."""
+        mock_client = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+        mock_tc.return_value = mock_client
+
+        service = TelegramService(api_id=1, api_hash="x", phone="+86")
+        is_auth = await service.is_authorized()
+        assert is_auth is True
+
+    @patch("services.telegram_client.TelegramClient")
+    async def test_is_authorized_handles_exception(self, mock_tc, db_session):
+        """🔴 E2: is_authorized returns False on network/session error."""
+        mock_client = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(side_effect=ConnectionError("network down"))
+        mock_tc.return_value = mock_client
+
+        service = TelegramService(api_id=1, api_hash="x", phone="+86")
+        is_auth = await service.is_authorized()
+        assert is_auth is False
+
+    @patch("services.telegram_client.TelegramClient")
+    async def test_is_authorized_lazy_creates_client(self, mock_tc, db_session):
+        """🔴 is_authorized lazy-initializes client (not short-circuit on _client None)."""
+        mock_client = AsyncMock()
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+        mock_tc.return_value = mock_client
+
+        service = TelegramService(api_id=1, api_hash="x", phone="+86")
+        assert service._client is None  # not yet created
+
+        is_auth = await service.is_authorized()
+
+        assert is_auth is True
+        assert service._client is not None  # client was created lazily
+        mock_client.is_user_authorized.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -4,29 +4,59 @@
 
 ---
 
-## Current Phase: fix/auth-state-and-discover — 修复登出状态 + 发现频道 + 认证事件传播 ✅
+## Current Phase: fix/session-persist-restart — 修复重启后显示未授权 + session 迁移到 data/ ✅
 
-**分支**: `fix/auth-state-and-discover`
+**分支**: `fix/session-persist-restart`
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 移除 `reset_telegram_service` 调用 | `api/auth.py` | 否 |
-| 新增 `app-auth-changed` 事件监听 | `frontend/src/App.vue` | 否 |
-| 认证后 dispatch `app-auth-changed` 事件 | `frontend/src/views/AuthView.vue` | 否 |
-| 修复发现频道按钮未调用 API | `frontend/src/views/ChannelsView.vue` | 否 |
+| `is_authorized()` 调用 `_ensure_client()` 而非短路返回 | `services/telegram_client.py` | 否 |
+| `_ensure_client()` 创建 session 父目录 | `services/telegram_client.py` | 否 |
+| session 路径从项目根改到 `data/tg_file_viewer` | `main.py` | 否（需迁移旧文件） |
 
 ### 场景设计
 
-#### S1 — Happy Path: 登出后可重新登录
+#### S1 — Happy Path: 重启后自动恢复授权
 ```
-GIVEN Telegram 已授权
-WHEN  POST /api/auth/logout
-THEN  返回 { "status": "logged_out" }
-      GET /api/auth/status → { "status": "logged_out", "is_authorized": false }
-      前端 Header 授权图标自动变灰，可重新发送验证码登录
+GIVEN data/tg_file_viewer.session 存在且有效
+WHEN  服务启动 → 前端 GET /api/auth/status
+THEN  is_authorized() → _ensure_client() → TelegramClient("data/tg_file_viewer")
+      → Telethon 自动从磁盘加载 session → True
+      → 前端显示"已授权"，无需重新登录
 ```
+
+#### S2 — Happy Path: Docker 持久卷恢复
+```
+GIVEN /data/tg_file_viewer.session 在持久卷上
+WHEN  容器重建后启动 → GET /api/auth/status
+THEN  同 S1，session 从持久卷自动恢复
+```
+
+#### E1 — Edge: session 文件不存在
+```
+GIVEN data/tg_file_viewer.session 不存在
+WHEN  is_authorized() 调用
+THEN  is_user_authorized() = False → 前端显示"未授权"
+      可正常发送验证码登录（登录后 session 写入 data/）
+```
+
+#### E2 — Edge: session 损坏/网络不通
+```
+GIVEN session 文件损坏或 Telegram 不可达
+WHEN  is_authorized() 调用
+THEN  try/except 捕获异常 → False，不崩溃
+```
+
+### 场景→测试映射
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 有效 session 恢复授权 | `test_is_authorized_with_valid_session` | 单元 |
+| E1 | 无 session 返回 False | `test_not_authorized_initially` | 单元 |
+| E2 | 异常捕获返回 False | `test_is_authorized_handles_exception` | 单元 |
+| — | 懒创建客户端 | `test_is_authorized_lazy_creates_client` | 单元 |
 
 #### S2 — Happy Path: 发现频道按钮正常加载
 ```

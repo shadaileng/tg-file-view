@@ -42,13 +42,17 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as session:
         await ensure_initialized(session)
 
-    # Initialize TelegramService with proxy from settings
+    # Initialize TelegramService with proxy from settings.
+    # Session file is stored under data/ so it survives restarts and
+    # Docker container rebuilds (when data/ is a persistent volume).
+    session_path = str(Path(settings.tg_data_dir) / "tg_file_viewer")
     tg_service = TelegramService(
         api_id=settings.tg_api_id,
         api_hash=settings.tg_api_hash,
         phone=settings.tg_phone or None,
         bot_token=settings.tg_bot_token or None,
         proxy_url=settings.tg_proxy_url,
+        session_name=session_path,
     )
     set_telegram_service(tg_service)
     logger.info("TelegramService initialized (api_id={}, proxy={})",
