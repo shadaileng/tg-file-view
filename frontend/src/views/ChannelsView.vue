@@ -40,9 +40,18 @@
         <button
           @click="handleAddChannel"
           :disabled="addLoading"
-          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
+          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm
+                 transition-colors disabled:opacity-50 flex items-center gap-1.5"
         >
-          {{ addLoading ? '添加中...' : '添加' }}
+          <svg v-if="addLoading"
+               class="animate-spin h-4 w-4 text-white"
+               xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12
+                     H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+          </svg>
+          <span>{{ addLoading ? '添加中...' : '添加' }}</span>
         </button>
         <button
           @click="showAdd = false; addError = ''"
@@ -80,9 +89,20 @@
           <button
             v-if="!ch.already_tracked"
             @click="handleAddFromDiscover(ch)"
-            class="ml-2 px-3 py-1 text-xs bg-green-500 hover:bg-green-600 text-white rounded transition-colors"
+            :disabled="discoverAddingId === ch.tg_id"
+            class="ml-2 px-3 py-1 text-xs bg-green-500 hover:bg-green-600 text-white rounded
+                   transition-colors disabled:opacity-60 disabled:cursor-not-allowed
+                   flex items-center gap-1 min-w-[68px] justify-center"
           >
-            添加
+            <svg v-if="discoverAddingId === ch.tg_id"
+                 class="animate-spin h-3 w-3 text-white"
+                 xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+              <path class="opacity-75" fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12
+                       H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+            </svg>
+            <span>{{ discoverAddingId === ch.tg_id ? '添加中' : '添加' }}</span>
           </button>
           <span v-else class="ml-2 text-xs text-gray-400">已添加</span>
         </div>
@@ -179,6 +199,7 @@ const discoverChannels = ref([])
 const discoverLoading = ref(false)
 const deleteTarget = ref(null)
 const deleteLoading = ref(false)
+const discoverAddingId = ref(null)
 
 function formatSize(bytes) {
   if (!bytes || bytes === 0) return '0 B'
@@ -226,6 +247,7 @@ async function handleAddChannel() {
 }
 
 async function handleAddFromDiscover(ch) {
+  discoverAddingId.value = ch.tg_id
   try {
     const body = ch.username ? { username: ch.username } : { tg_id: ch.tg_id }
     await channelsApi.create(body)
@@ -234,6 +256,8 @@ async function handleAddFromDiscover(ch) {
     await loadDiscover()
   } catch {
     // handled by interceptor
+  } finally {
+    discoverAddingId.value = null
   }
 }
 
