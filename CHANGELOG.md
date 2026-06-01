@@ -371,3 +371,55 @@
 ### 测试统计
 - Step 7 新增: 17/17 ✅
 - **预期总计: 168/168 PASS** (151 + 17)
+
+---
+
+## Step 8: 配置管理 API — 热更新 DB config ✅ 12/12 PASS
+
+### 新增功能
+- **`GET /api/config`**: 列出所有注册配置项（含 key、value、editable、updated_at）
+- **`GET /api/config/{key}`**: 获取单个配置值
+- **`PUT /api/config/{key}`**: 更新配置值（admin-only，需 `X-Admin-Password` header，立即热更新生效）
+- **值类型校验**: int/float/bool 类型自动校验及范围限制
+- **只读保护**: `api_id`、`api_hash` 等 6 个敏感 key 禁止通过 API 修改
+- **管理员认证**: 复用 `config.py::is_admin()` 通过 `X-Admin-Password` header 认证
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `api/config.py` | 配置管理 API: GET 列表/单项, PUT 更新 (admin-auth + 校验) |
+| `tests/test_config_api.py` | 配置 API 测试 (12 tests) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `config.py` | 新增 `list_all_configs`、`validate_config_value`、`READONLY_CONFIG_KEYS`、`ALL_CONFIG_KEYS`、`CONFIG_VALUE_SCHEMA` |
+| `main.py` | 注册 `config_router` |
+| `tests/conftest.py` | 修复：添加 `import models`（修复 `Base.metadata` 为空导致 `_reset_tables` 不建表的问题） |
+
+### 场景→测试映射
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 列出所有配置 | `test_list_all_config` | 单元 |
+| S2 | 获取单个配置 | `test_get_single_config` | 单元 |
+| S3 | 更新配置（管理员） | `test_update_config` | 集成 |
+| S4 | 更新不存在的 key | `test_update_nonexistent_key` | 单元 |
+| S5 | 未提供密码 | `test_update_no_password` | 单元 |
+| S6 | 密码错误 | `test_update_wrong_password` | 单元 |
+| S7 | 值类型校验失败 | `test_update_invalid_type` | 单元 |
+| — | 获取不存在的 key | `test_get_nonexistent_key` | 单元 |
+| — | 更新只读 key | `test_update_readonly_key` | 单元 |
+| — | 值超出范围 | `test_update_value_out_of_range` | 单元 |
+| — | 布尔值校验 | `test_update_bool_invalid` | 单元 |
+| — | 浮点数校验 | `test_update_float_valid` | 单元 |
+
+### 关键设计决策
+- **只读保护列表**: `api_id`, `api_hash`, `phone`, `bot_token`, `proxy_url`, `admin_password` — Telegram 凭据不应通过 API 修改（会导致 session 不一致或安全漏洞）
+- **类型校验 schema**: `CONFIG_VALUE_SCHEMA` 定义每个 key 的类型及 min/max 范围，利用现有 Settings 字段类型信息
+- **热更新**: 已有 `get_settings()` 每次都从 DB 读取，`PUT` 更新后下次调用立即生效，无需重启
+- **不可新增/删除**: API 只操作 `ALL_CONFIG_KEYS` 中注册的 key，保持与 Settings 类字段同步
+- **conftest 修复**: 添加 `import models` 确保 `Base.metadata` 包含所有 ORM 表，解决测试中 `_reset_tables` fixture 不建表的问题
+
+### 测试统计
+- Step 8 新增: 12/12 ✅
+- **预期总计: 180/180 PASS** (168 + 12)

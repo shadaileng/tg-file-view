@@ -4,9 +4,9 @@
 
 ---
 
-## Current Phase: Step 7 — 缓存管理器 (LRU + 动态上限) ✅
+## Current Phase: Step 8 — 配置管理 API (热更新 DB config) ✅
 
-**分支**: `feat/cache-manager`
+**分支**: `feat/config-api`
 
 ### API 端点设计
 
@@ -157,7 +157,7 @@ tg_file_viewer/
 │   ├── files.py         # ✅ 文件列表/下载/缓存: list, detail, download, cache
 │   ├── sync.py          # ✅ 同步触发/管理: trigger(202), tasks, cancel
 │   ├── thumbnails.py    # ✅ 缩略图任务管理: trigger, batch, list, stats, cancel
-│   └── config.py        # ⏳ 配置管理API
+│   ├── config.py         # ✅ 配置管理API: list/get/update (admin-auth, 类型校验, 只读保护)
 │   └── cache.py          # ✅ 缓存统计 + 手动淘汰 API
 ├── middleware/           # 中间件层
 │   ├── logging.py       # ✅ 请求日志: method + path + status + 耗时ms
@@ -181,6 +181,7 @@ tg_file_viewer/
 │   ├── test_task_queue.py     # ✅ 11 tests
 │   ├── test_thumbnails_api.py # ✅ 13 tests
 │   └── test_data/          # 测试数据
+│   ├── test_config_api.py    # ✅ 12 tests
 ├── frontend/            # ⏳ Vue 3 + Vite + Tailwind (pnpm)
 ├── data/                # 运行时数据 (db.sqlite, thumbnails/, cache/)
 ├── CHANGELOG.md         # 开发日志 (每步更新的详细记录)
@@ -248,7 +249,7 @@ TelegramService.auth_state: Enum
 | 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ |
 | 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ |
 | 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ |
-| 8 | 配置管理 API (热更新 DB config) | ~8 | ⏳ |
+| 8 | 配置管理 API (热更新 DB config) | 12 | ✅ |
 | 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ |
 | 10 | Docker + HF Space 部署 | ~5 | ⏳ |
 
