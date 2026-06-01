@@ -1,3 +1,14 @@
+---
+title: TG File Viewer
+emoji: 📁
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+license: mit
+short_description: Telegram channel file viewer with thumbnail preview & caching
+---
+
 # TG File Viewer
 
 > 单体 Telegram 频道文件预览服务 — 替代三服务架构，整合文件同步、预览、缩略图生成、缓存管理。
@@ -232,11 +243,6 @@ AppConfig  — key-value 动态配置
 | GET | `/api/thumbnails/jobs/{id}` | 任务详情 |
 | GET | `/api/thumbnails/stats` | 统计概览 |
 | POST | `/api/thumbnails/jobs/{id}/cancel` | 取消任务 |
-
-### 待实现 ⏳
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
 | GET | `/api/config` | 获取所有配置 |
 | PUT | `/api/config/{key}` | 更新配置项 |
 
@@ -257,9 +263,9 @@ AppConfig  — key-value 动态配置
 | Step 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ 已完成 |
 | Step 8 | 配置管理 API (热更新) | 12 | ✅ 已完成 |
 | Step 9 | Vue 3 + Tailwind 前端 | 8 views | ✅ 已完成 |
-| Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ⏳ 待实施 |
+| Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ✅ 已完成 |
 
-**当前进度**: 9/10 步完成，180 个测试全部通过。
+**当前进度**: 10/10 步完成，180 个测试全部通过。
 
 ---
 
@@ -367,13 +373,56 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 > 注意：必须使用 `uv run` 启动以确保虚拟环境和依赖正确加载。启动时自动初始化数据库（`data/db.sqlite`），所有表由 `models.py` 注册。
 
-### Docker（待实现）
+### Docker
 
-多阶段构建：构建前端 → 打包后端 → 生产镜像。
+```bash
+# 构建镜像
+docker build -t tg-file-viewer .
 
-### Hugging Face Space（待实现）
+# 运行（挂载数据目录）
+docker run -d \
+  -p 7860:7860 \
+  -v $(pwd)/data:/data \
+  -e TG_API_ID=your_api_id \
+  -e TG_API_HASH=your_api_hash \
+  --name tg-file-viewer \
+  tg-file-viewer
 
-`Dockerfile` + `README.md` 适配 HF Space 环境。
+# 查看日志
+docker logs -f tg-file-viewer
+```
+
+**镜像说明**：
+- **Stage 1**：`node:20-alpine` 构建 Vue 3 前端（`pnpm build → dist/`）
+- **Stage 2**：`python:3.11-slim` 运行 FastAPI 后端，安装 `uv` 同步依赖
+- 前端 `dist/` 复制到后端容器，由 FastAPI `StaticFiles` 统一 serve
+- 数据目录 `/data` 可挂载为持久化存储
+
+### Hugging Face Space
+
+1. 在 [HF](https://huggingface.co) 创建 Space，SDK 选择 **Docker**
+2. 推送代码到 Space 仓库：
+
+```bash
+git clone https://huggingface.co/spaces/YOUR_USER/YOUR_SPACE
+cp -r tg_file_viewer/* YOUR_SPACE/
+cd YOUR_SPACE
+git add . && git commit -m "Deploy tg_file_viewer"
+git push
+```
+
+3. HF 自动检测 `Dockerfile` 构建镜像，启动后访问 `https://YOUR_USER-YOUR_SPACE.hf.space`
+
+**环境变量**（在 Space Settings → Secrets 中配置）：
+
+| 变量 | 说明 |
+|------|------|
+| `TG_API_ID` | Telegram API ID |
+| `TG_API_HASH` | Telegram API Hash |
+| `TG_PROXY_URL` | (可选) socks5 代理 |
+| `TG_ADMIN_PASSWORD` | (可选) 管理密码 |
+
+**持久化存储**：Space Settings → Persistent Storage → 挂载到 `/data`
 
 ---
 

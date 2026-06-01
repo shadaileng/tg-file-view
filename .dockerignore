@@ -48,10 +48,6 @@ htmlcov/
 *.swo
 *~
 
-# ── 锁文件（Docker 内重新 uv sync） ──
-uv.lock
-frontend/pnpm-lock.yaml
-
 # ── HF / CI ──
 .hf/
 .cache/

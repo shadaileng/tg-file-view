@@ -4,15 +4,18 @@
 
 ---
 
-## Current Phase: 启动脚本 + 开发工具 ✅
+## Current Phase: Step 10 — Docker + HF Space 部署 ✅
 
-**分支**: `feat/thumbnail-task-queue`
+**分支**: `feat/docker-hf-deploy`
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 新增 `scripts/dev.sh` 开发模式一键启动 | scripts/ | 否 |
+| 新增 `Dockerfile` 多阶段构建 | 部署 | 否 |
+| 新增 `.dockerignore` | 构建 | 否 |
+| `README.md` HF 元数据 + 部署章节 | 文档 | 否 |
+| `AGENT.md` / `CHANGELOG.md` 更新 | 文档 | 否 |
 | 新增 `scripts/start.sh` 生产模式启动 | scripts/ | 否 |
 | 更新 `README.md` 项目结构和运行章节 | 文档 | 否 |
 
