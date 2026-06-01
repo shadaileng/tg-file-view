@@ -164,6 +164,10 @@ function handleToast(e) {
   showToast(e.detail.type, e.detail.message)
 }
 
+function handleAuthChanged() {
+  checkAuth()
+}
+
 async function checkHealth() {
   try {
     await healthApi.check()
@@ -188,10 +192,12 @@ onMounted(() => {
   checkAuth()
   healthTimer = setInterval(checkHealth, 30000)
   window.addEventListener('app-toast', handleToast)
+  window.addEventListener('app-auth-changed', handleAuthChanged)
 })
 
 onUnmounted(() => {
   clearInterval(healthTimer)
   window.removeEventListener('app-toast', handleToast)
+  window.removeEventListener('app-auth-changed', handleAuthChanged)
 })
 </script>
