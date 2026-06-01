@@ -1,5 +1,29 @@
 # 开发日志 (CHANGELOG)
 
+## fix: get_client() 缺少 await 导致运行时错误
+
+### 问题
+`get_client()` 是 `async` 方法，但 `api/channels.py` 的 `_require_authorized_client()` 和 `services/sync_engine.py` 均未 `await` 调用，导致返回 coroutine 对象而非 `TelegramClient`，后续调用 `iter_dialogs`/`get_entity` 等方法时报错：
+```
+'coroutine' object has no attribute 'iter_dialogs'
+```
+**影响范围**：发现频道、创建频道、同步引擎均受影响。
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/channels.py` | `_require_authorized_client()` 改为 `async def`，内部 `await get_client()`；两个调用方添加 `await` |
+| `services/sync_engine.py` | `svc.get_client()` 前添加 `await` |
+| `tests/test_channels_api.py` | `svc.get_client` mock 从 `MagicMock` 改为 `AsyncMock` |
+| `tests/test_sync_engine.py` | 同上 |
+| `tests/test_sync_api.py` | 同上 |
+
+### 测试
+- 全量 pytest 回归：183/183 PASS ✅
+
+---
+
 ## fix: 修复重启后授权状态 + session 迁移到 data/ 目录
 
 ### 问题
