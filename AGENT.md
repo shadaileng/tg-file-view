@@ -4,165 +4,51 @@
 
 ---
 
-## Current Phase: Step 10 — Docker + HF Space 部署 ✅
+## Current Phase: fix/auth-state-and-discover — 修复登出状态 + 发现频道 + 认证事件传播 ✅
 
-**分支**: `feat/docker-hf-deploy`
+**分支**: `fix/auth-state-and-discover`
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| 新增 `Dockerfile` 多阶段构建 | 部署 | 否 |
-| 新增 `.dockerignore` | 构建 | 否 |
-| `README.md` HF 元数据 + 部署章节 | 文档 | 否 |
-| `AGENT.md` / `CHANGELOG.md` 更新 | 文档 | 否 |
-| 新增 `scripts/start.sh` 生产模式启动 | scripts/ | 否 |
-| 更新 `README.md` 项目结构和运行章节 | 文档 | 否 |
+| 移除 `reset_telegram_service` 调用 | `api/auth.py` | 否 |
+| 新增 `app-auth-changed` 事件监听 | `frontend/src/App.vue` | 否 |
+| 认证后 dispatch `app-auth-changed` 事件 | `frontend/src/views/AuthView.vue` | 否 |
+| 修复发现频道按钮未调用 API | `frontend/src/views/ChannelsView.vue` | 否 |
 
 ### 场景设计
 
-#### S1 — 开发模式首次启动
+#### S1 — Happy Path: 登出后可重新登录
 ```
-GIVEN 端口 8000/5173 空闲
-WHEN  ./scripts/dev.sh
-THEN  自动清理端口 → 后台启动 uvicorn --reload :8000 → 等待后端就绪 → 前台启动 Vite dev :5173
-      Ctrl+C 自动清理所有进程
-```
-
-#### S2 — 端口被旧实例占用
-```
-GIVEN 端口 8000 被残留进程占用
-WHEN  ./scripts/dev.sh 或 ./scripts/start.sh
-THEN  自动 fuser -k 杀掉旧进程 → 正常启动
+GIVEN Telegram 已授权
+WHEN  POST /api/auth/logout
+THEN  返回 { "status": "logged_out" }
+      GET /api/auth/status → { "status": "logged_out", "is_authorized": false }
+      前端 Header 授权图标自动变灰，可重新发送验证码登录
 ```
 
-#### S3 — 生产模式启动
+#### S2 — Happy Path: 发现频道按钮正常加载
 ```
-GIVEN frontend/node_modules 已安装
-WHEN  ./scripts/start.sh
-THEN  自动 pnpm build → 启动 uvicorn :8000 serve SPA → 访问 localhost:8000 使用
-```
-
-### API 端点设计
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/cache/stats` | 缓存统计概览（总量、文件数、使用率） |
-| `POST` | `/api/cache/evict` | 手动触发 LRU 淘汰至配置上限 |
-
-### 变更范围矩阵
-
-| 变更点 | 影响模块 | 破坏性变更 |
-|--------|---------|:---:|
-| `File` 模型新增 `cached_at` / `accessed_at` 列 | `models.py` | 否（nullable） |
-| 新增 `services/cache_manager.py`（LRU 淘汰 + 大小追踪） | 服务层 | 否 |
-| 新增 `api/cache.py`（统计 + 手动淘汰 API） | API 层 | 否 |
-| 修改 `api/files.py` — `_ensure_cached` 集成 CacheManager | API 层 | 否 |
-| 修改 `main.py` — 注册 cache_router | 入口 | 否 |
-| 新增 `tests/test_cache_manager.py` | 测试 | 否 |
-| 更新 AGENT.md / CHANGELOG.md | 文档 | 否 |
-
-### 核心设计要点
-
-1. **LRU 淘汰策略**：每次访问文件（下载、缩略图生成）更新 `accessed_at`。淘汰时按 `accessed_at ASC`（最久未访问优先），NULL 值视为最先淘汰。
-2. **淘汰触发时机**：下载前预检查（`check_and_evict`）→ 下载后后检查（`post_download_check`）。两阶段确保不浪费带宽。
-3. **动态上限**：每次操作实时从 DB `app_config` 读取 `cache_max_size_mb`，支持热更新。
-4. **`cached_at` vs `accessed_at`**：`cached_at`=文件首次缓存时刻；`accessed_at`=最后一次访问时刻。淘汰依据是 `accessed_at`。
-5. **缓存大小追踪**：使用 DB 中 `SUM(file_size) WHERE is_cached=true` 代替磁盘扫描，更快。
-6. **无限模式**：`cache_max_size_mb=0` 时跳过所有检查和淘汰。
-
-### 边界条件与失败模式
-
-| # | 场景 | 预期行为 |
-|---|------|---------|
-| E1 | `cache_max_size_mb = 0` | 无限模式，不淘汰，不检查 |
-| E2 | 单个文件大小超过上限（无其他文件）| 返回 507，不下载 |
-| E3 | 淘汰后空间仍不够 | 返回 507 Insufficient Storage |
-| E4 | 淘汰时磁盘文件已被手动删除 | 跳过磁盘删除，DB 标记 `is_cached=false`，继续淘汰下一个 |
-| E5 | 动态修改 `cache_max_size_mb` | 下一次缓存操作自动读取新值，若当前已超限则触发淘汰 |
-| E6 | 所有缓存文件都被频繁访问 | 返回 507，告知无冷数据可淘汰 |
-
-### GIVEN/WHEN/THEN 场景
-
-#### S1 — Happy Path: 下载触发 LRU 淘汰
-```
-GIVEN cache_max_size_mb=2, 当前缓存 2MB（2个文件），新文件 1MB
-WHEN  调用 _ensure_cached(file_id=3, size=1MB)
-THEN  预检查：2 + 1 = 3 > 2 → 需要释放 ≥1MB
-      淘汰 1 个 LRU 文件（1MB, accessed_at 最早）→ 当前缓存 1MB
-      下载 file_3（1MB）→ 当前缓存 2MB ≤ 上限
-      返回成功，File_3.is_cached=true, cached_at & accessed_at 已设置
+GIVEN Telegram 已授权，用户有已订阅频道
+WHEN  点击"发现频道"按钮
+THEN  面板展开，调用 GET /api/channels/discover
+      列表展示发现的频道（已添加的标记"已添加"）
 ```
 
-#### S2 — Happy Path: 查看缓存统计
+#### S3 — Edge: 发现频道无结果
 ```
-GIVEN 5 个文件缓存，总计 150MB，上限 500MB
-WHEN  GET /api/cache/stats
-THEN  返回 { total_size_mb: 150.0, file_count: 5, max_size_mb: 500, usage_percent: 30.0 }
-```
-
-#### S3 — Happy Path: 手动触发淘汰
-```
-GIVEN cache_max_size_mb=1, 当前缓存 5MB（5个文件）
-WHEN  POST /api/cache/evict
-THEN  按 LRU 淘汰文件直至 ≤1MB
-      返回 { evicted_count: 4, freed_mb: 4.0, total_size_mb: 1.0 }
+GIVEN Telegram 已授权，用户无已订阅频道 或 授权过期
+WHEN  点击"发现频道"按钮
+THEN  面板展开，显示"未发现频道，请确认 Telegram 已授权"
 ```
 
-#### S4 — Happy Path: 无限缓存模式
+#### S4 — Edge: 认证状态变更后前端自动刷新
 ```
-GIVEN cache_max_size_mb=0
-WHEN  缓存任意大小文件
-THEN  跳过淘汰检查，直接下载，不淘汰任何文件
+GIVEN 认证页面完成登录/登出
+WHEN  dispatchEvent('app-auth-changed')
+THEN  App.vue 监听到事件 → 调用 checkAuth() → Header 授权图标实时更新
 ```
-
-#### S5 — Edge: 单文件超过上限（无其他文件）
-```
-GIVEN cache_max_size_mb=1, 当前缓存 0MB, 新文件 5MB
-WHEN  缓存该文件
-THEN  预检查：1 > 0 → 不下载，返回 507
-```
-
-#### S6 — Edge: 空间完全不够
-```
-GIVEN cache_max_size_mb=1, 当前缓存 1MB, 新文件 5MB
-WHEN  缓存该文件
-THEN  预检查：1 + 5 = 6 > 1，需释放 5MB
-      但总计只有 1MB 可释放 → 返回 507
-      不下载（避免浪费带宽）
-```
-
-#### S7 — Edge: 淘汰时磁盘文件不存在
-```
-GIVEN file_a 在 DB 中 is_cached=true，但磁盘文件已被手动删除
-WHEN  淘汰 file_a
-THEN  更新 DB（is_cached=false, cache_path=null），不崩溃
-      继续淘汰下一个 LRU 文件
-      日志 warn："cached file missing on disk: {path}"
-```
-
-#### S8 — Edge: 动态修改上限后超额
-```
-GIVEN 初始 cache_max_size_mb=10, 当前缓存 2MB
-WHEN  通过 DB 修改 cache_max_size_mb=1
-THEN  下一次缓存操作读取 settings（含 DB 覆盖值）→ 1MB
-      发现 2 > 1，触发淘汰至 ≤1MB
-```
-
-### 场景→测试映射
-
-| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
-|---------|---------|-------------|------|
-| S1 | 下载触发 LRU 淘汰 | `test_evict_on_pre_check` | 集成 |
-| S2 | 查看缓存统计 | `test_cache_stats` / `test_cache_stats_empty` | 单元 |
-| S3 | 手动淘汰 | `test_manual_evict` / `test_manual_evict_already_under` | 单元 |
-| S4 | 无限缓存模式 | `test_unlimited_cache` / `test_unlimited_cache_evict_manual` | 单元 |
-| S5 | 单文件超限（无其他文件）| `test_single_file_exceeds_limit` / `test_single_file_exceeds_limit_with_other_files` | 单元 |
-| S6 | 空间完全不够 | `test_insufficient_space` / `test_insufficient_space_no_evictable` | 单元 |
-| S7 | 淘汰时文件缺失 | `test_evict_missing_file` | 单元 |
-| S8 | 动态修改上限 | `test_dynamic_limit` | 集成 |
-
-- 额外测试：`test_evict_respects_lru_order`、`test_mark_accessed`、`test_post_download_check_evicts_if_over`、`test_no_eviction_when_under_limit`
 
 ---
 

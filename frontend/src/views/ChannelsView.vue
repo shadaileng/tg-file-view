@@ -4,7 +4,7 @@
       <h2 class="text-xl font-bold text-gray-800 dark:text-gray-200">频道管理</h2>
       <div class="flex gap-2">
         <button
-          @click="showDiscover = !showDiscover"
+          @click="toggleDiscover"
           class="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
         >
           {{ showDiscover ? '取消' : '发现频道' }}
@@ -267,11 +267,6 @@ async function handleDelete() {
   }
 }
 
-// Re-fetch discover if opened
-const discoverWatcher = ref(false)
-// Simple watcher pattern
-const originalDiscover = showDiscover
-// Actually, let's just use a manual approach
 async function toggleDiscover() {
   showDiscover.value = !showDiscover.value
   if (showDiscover.value) {
@@ -279,11 +274,5 @@ async function toggleDiscover() {
   }
 }
 
-// Override the button handler
-const origToggleDiscover = toggleDiscover
-
 onMounted(loadChannels)
-
-// Export toggleDiscover for template
-defineExpose({ toggleDiscover: origToggleDiscover })
 </script>

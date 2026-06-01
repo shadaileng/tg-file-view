@@ -177,6 +177,7 @@ async function handleVerifyCode() {
     if (data.status === 'authorized') {
       authInfo.value = { status: 'authorized', is_authorized: true }
       step.value = 'done'
+      window.dispatchEvent(new CustomEvent('app-auth-changed'))
     } else if (data.status === '2fa_required') {
       step.value = '2fa'
       password2fa.value = ''
@@ -199,6 +200,7 @@ async function handleVerify2FA() {
     await authApi.verify2FA(password2fa.value)
     authInfo.value = { status: 'authorized', is_authorized: true }
     step.value = 'done'
+    window.dispatchEvent(new CustomEvent('app-auth-changed'))
   } catch (e) {
     error.value = e.response?.data?.detail || e.message || '2FA 验证失败'
   } finally {
@@ -212,6 +214,7 @@ async function handleLogout() {
     await authApi.logout()
     authInfo.value = { status: 'disconnected', is_authorized: false }
     step.value = 'send'
+    window.dispatchEvent(new CustomEvent('app-auth-changed'))
     code.value = ''
     password2fa.value = ''
     error.value = ''

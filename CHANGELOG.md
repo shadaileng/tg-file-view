@@ -1,5 +1,34 @@
 # 开发日志 (CHANGELOG)
 
+## fix: 修复登出后认证状态 + 发现频道按钮无响应 ✅ 180/180 PASS
+
+### 问题
+1. **登出后无法重新登录**：`logout()` 中调用 `reset_telegram_service()` 销毁全局 service 实例，导致 `auth_status()` 返回 `not_configured`，前端检测后不显示登录界面
+2. **"发现频道"按钮点击无效果**：按钮 `@click` 只切换 `showDiscover` 布尔值，未调用 `loadDiscover()` 请求 API，面板展开但始终显示"未发现频道"
+3. **认证后前端状态不更新**：AUTH/LOGOUT 成功后 Header 的授权状态图标不刷新，需手动刷新页面
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/auth.py` | 移除 `reset_telegram_service` 导入和调用；`logout()` 中只调用 `svc.logout()`，不再销毁实例 |
+| `frontend/src/App.vue` | 新增 `handleAuthChanged()` 监听 `app-auth-changed` 事件 → 调用 `checkAuth()` 刷新状态 |
+| `frontend/src/views/AuthView.vue` | 验证码通过/2FA通过/登出后 dispatch `app-auth-changed` 自定义事件 |
+| `frontend/src/views/ChannelsView.vue` | ① 按钮 `@click` 改为 `toggleDiscover`（调用 `loadDiscover()`）；② 清理死代码（`discoverWatcher`、`origToggleDiscover`、`defineExpose`） |
+
+### 场景→测试映射
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 登出后 auth_status 返回 logged_out（可重新登录） | `test_logout_success` | 单元 |
+| S2 | 发现频道按钮触发 API 请求 | Vue 组件行为（按钮绑定 `toggleDiscover`） | 前端 |
+| S3 | 登录/登出后 Header 授权图标自动刷新 | `app-auth-changed` 事件 → `checkAuth()` | 前端 |
+
+### 测试
+- 全量 pytest 回归：180/180 PASS ✅
+
+---
+
 ## Step 10: Docker 多阶段构建 + HF Space 部署 ✅
 
 ### 变更内容

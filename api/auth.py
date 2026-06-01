@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 from services.telegram_client import (
     get_telegram_service,
-    reset_telegram_service,
     AuthState,
 )
 
@@ -94,5 +93,4 @@ async def logout():
     svc = get_telegram_service()
     if svc:
         await svc.logout()
-    reset_telegram_service()
     return {"status": "logged_out"}
