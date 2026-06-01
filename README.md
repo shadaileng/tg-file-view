@@ -2,7 +2,7 @@
 
 > 单体 Telegram 频道文件预览服务 — 替代三服务架构，整合文件同步、预览、缩略图生成、缓存管理。
 
-[![Tests](https://img.shields.io/badge/tests-151/151%20PASS-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-180/180%20PASS-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -81,16 +81,26 @@ tg_file_viewer/
 │   ├── files.py            # 文件列表/预览 (已实现 ✅)
 │   ├── sync.py             # 同步触发/管理 (已实现 ✅)
 │   ├── thumbnails.py       # 缩略图管理 (已实现 ✅)
-│   └── config.py           # 配置管理 API (待实现)
+│   ├── cache.py             # 缓存管理 API (已实现 ✅)
+│   └── config.py            # 配置管理 API (已实现 ✅)
 │
 ├── services/               # 业务逻辑层
 │   ├── __init__.py
 │   ├── telegram_client.py  # Telethon 客户端封装 (已实现 ✅)
 │   ├── sync_engine.py      # 同步引擎 (已实现 ✅)
 │   ├── task_queue.py       # 生产者-消费者任务池 (已实现 ✅)
-│   └── cache_manager.py    # LRU 缓存管理器 (待实现)
+│   └── cache_manager.py    # LRU 缓存管理器 (已实现 ✅)
 │
-├── frontend/               # Vue 3 前端 (待实现)
+├── frontend/               # Vue 3 前端 (pnpm)
+│   ├── package.json         # Vue 3 + Vite + Tailwind + Axios
+│   ├── vite.config.js       # dev proxy /api → :8000
+│   ├── tailwind.config.js   # darkMode: 'class'
+│   └── src/
+│       ├── App.vue          # 侧边栏 + Header(健康/授权/暗色) + toast
+│       ├── router/index.js  # 8 条路由 (懒加载)
+│       ├── api/index.js     # 7 个 API 模块
+│       ├── composables/useDarkMode.js
+│       └── views/           # 8 个页面
 │
 ├── tests/                  # 测试
 │   ├── conftest.py         # pytest fixtures
@@ -240,12 +250,12 @@ AppConfig  — key-value 动态配置
 | Step 4 | 文件列表 / 下载 / 缓存 API | 14 | ✅ 已完成 |
 | Step 5 | 同步引擎 (Telethon iter → DB) | 24 | ✅ 已完成 |
 | Step 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ 已完成 |
-| Step 7 | 缓存管理器 (LRU, 动态上限) | ~10 | ⏳ 待实施 |
-| Step 8 | 配置管理 API (热更新) | ~8 | ⏳ 待实施 |
-| Step 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ 待实施 |
+| Step 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ 已完成 |
+| Step 8 | 配置管理 API (热更新) | 12 | ✅ 已完成 |
+| Step 9 | Vue 3 + Tailwind 前端 | 8 views | ✅ 已完成 |
 | Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ⏳ 待实施 |
 
-**当前进度**: 6/10 步完成，151 个测试全部通过。
+**当前进度**: 9/10 步完成，180 个测试全部通过。
 
 ---
 
@@ -255,7 +265,7 @@ AppConfig  — key-value 动态配置
 
 - Python 3.11+
 - uv (Python 包管理)
-- pnpm (前端包管理，暂不需要)
+- pnpm (前端包管理) 或 npm
 - Telegram API 凭证 ([my.telegram.org](https://my.telegram.org))
 
 ### 安装
@@ -277,11 +287,17 @@ cp .env.example .env
 ### 运行
 
 ```bash
-# 启动开发服务器
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
-# 或使用 uv
+# 1. 启动后端
 uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# 2. 启动前端开发服务器 (另一个终端)
+cd frontend && pnpm install && pnpm dev
+# 前端访问: http://localhost:5173 (API 自动代理到 :8000)
+
+# 或仅后端 + 生产模式前端:
+cd frontend && pnpm build
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
+# 访问: http://localhost:8000 (SPA 一站式)
 ```
 
 ### 认证

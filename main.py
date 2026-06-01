@@ -114,6 +114,11 @@ cache_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/thumbnails", StaticFiles(directory=str(thumb_dir)), name="thumbnails")
 app.mount("/cache", StaticFiles(directory=str(cache_dir)), name="cache")
 
+# Mount frontend dist (production mode) — must be done AFTER static routes
+# and before API routers for correct priority
+frontend_dist = Path(__file__).parent / "frontend" / "dist"
+_have_frontend = frontend_dist.exists()
+
 # Register API routers
 from api.auth import router as auth_router
 from api.cache import router as cache_router
@@ -132,13 +137,22 @@ app.include_router(sync_router)
 app.include_router(thumb_router)
 
 
-@app.get("/")
-async def root():
-    """Health check / root endpoint."""
-    return {"status": "ok", "service": "tg_file_viewer", "version": "0.1.0"}
+@app.get("/api/root-status")
+async def root_status():
+    """Status endpoint (used in dev mode when root is not overridden)."""
+    return {"status": "ok", "service": "tg_file_viewer", "version": "0.1.0", "frontend_served": _have_frontend}
 
 
 @app.get("/api/health")
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+# Mount the SPA frontend (production mode).
+# Must be the last mount so it catches all routes not matched by API or static paths.
+if _have_frontend:
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+    logger.info("Frontend SPA mounted from {}", frontend_dist)
+else:
+    logger.info("Frontend dist not found at {} — serving API only", frontend_dist)

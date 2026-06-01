@@ -1,5 +1,58 @@
 # 开发日志 (CHANGELOG)
 
+## Step 9: Vue 3 + Tailwind 前端 ✅ 180/180 PASS
+
+### 技术决策
+| 决策 | 选择 | 说明 |
+|:---|:---|:---|
+| UI 框架 | Tailwind CSS 纯手写 | 无第三方 UI 库 |
+| 夜间模式 | 支持 | `class` 策略，localStorage 持久化 |
+| 文件展示 | 卡片网格 | 响应式 1→4 列，含缩略图预览 |
+| 包管理 | pnpm | pnpm 11.5.0 |
+
+### 新增文件
+| 文件 | 说明 |
+|------|------|
+| `frontend/package.json` | Vue 3 + Vite + Tailwind + Axios + Vue Router |
+| `frontend/vite.config.js` | dev proxy (/api, /thumbnails, /cache → :8000) |
+| `frontend/tailwind.config.js` | darkMode: 'class', 自定义 sidebar 色 |
+| `frontend/postcss.config.js` | Tailwind + Autoprefixer 管道 |
+| `frontend/index.html` | SPA 入口 + dark class body 初始化 |
+| `frontend/src/main.js` | createApp + router + global CSS |
+| `frontend/src/style.css` | Tailwind directives + 自定义滚动条 + toast 过渡 |
+| `frontend/src/App.vue` | 侧边栏 + Header(健康/授权/暗色切换) + toast 系统 |
+| `frontend/src/composables/useDarkMode.js` | 暗色模式状态管理 (localStorage) |
+| `frontend/src/api/index.js` | 7 个 API 模块 (auth/channels/files/sync/thumb/cache/config) |
+| `frontend/src/router/index.js` | 8 条路由 (懒加载) |
+| `frontend/src/views/DashboardView.vue` | 统计卡片: 频道数/文件数/缓存使用率/缩略图任务 + 最近同步 |
+| `frontend/src/views/AuthView.vue` | 三步登录: 发送验证码 → 验证码 → 2FA |
+| `frontend/src/views/ChannelsView.vue` | 频道 CRUD: 列表/添加/发现/删除确认 |
+| `frontend/src/views/FilesView.vue` | 频道选择器 + 卡片网格 + 分页 + 下载/缓存/缩略图 |
+| `frontend/src/views/SyncView.vue` | 触发同步 + 实时轮询进度 + 任务历史 + 取消 |
+| `frontend/src/views/ThumbnailsView.vue` | 统计 + 状态筛选 + 批量生成 + 取消 |
+| `frontend/src/views/CacheView.vue` | 统计面板 + 使用率条 + 手动淘汰 |
+| `frontend/src/views/SettingsView.vue` | 配置列表 + 编辑弹窗 + 只读保护 + admin 密码 |
+| `frontend/dist/` | 生产构建产物 (13 文件, ~180KB gzip) |
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `main.py` | 新增生产模式前端挂载 (`frontend/dist` → StaticFiles html=True) |
+| `AGENT.md` | Step 9 标记完成 |
+| `CHANGELOG.md` | 本条目 |
+| `README.md` | 前端架构 + 开发命令 |
+
+### 关键设计决策
+1. **API 代理**: 开发模式通过 `vite.config.js` proxy 转发 `/api/*` → `localhost:8000`，生产模式 FastAPI 直接挂载静态文件
+2. **Toast 系统**: 通过 CustomEvent `app-toast` 实现全局通知，API 拦截器统一分发错误 toast
+3. **暗色模式**: `useDarkMode` composable 管理 `<html class="dark">`，`localStorage` 持久化，Initial load 检测系统偏好
+4. **路由懒加载**: 所有 8 个视图使用 `() => import(...)` 动态导入，构建时自动 code-split
+5. **响应式卡片网格**: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4`
+
+### 测试统计: 180/180 PASS (回归全部通过) ✅
+
+---
+
 ## Step 1: 项目骨架 — 目录结构、数据库、配置、模型 ✅ 30/30 PASS
 
 ### 新增文件
