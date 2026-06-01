@@ -243,7 +243,7 @@ class TestSyncChannelIntegration:
         mock_client = AsyncMock()
         from services.telegram_client import AuthState
         mock_svc.auth_state = AuthState.AUTHORIZED  # Use real enum
-        mock_svc.get_client = MagicMock(return_value=mock_client)
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_client.get_entity = AsyncMock(return_value=MagicMock())
 
         # Build 10 photo messages — use _AsyncIter for async iteration
@@ -287,7 +287,7 @@ class TestSyncChannelIntegration:
         mock_client = AsyncMock()
         from services.telegram_client import AuthState
         mock_svc.auth_state = AuthState.AUTHORIZED
-        mock_svc.get_client = MagicMock(return_value=mock_client)
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_client.get_entity = AsyncMock(return_value=MagicMock())
 
         # Messages 1-5 (already seeded) + 6-10 (new)
@@ -322,7 +322,7 @@ class TestSyncChannelIntegration:
         mock_client = AsyncMock()
         from services.telegram_client import AuthState
         mock_svc.auth_state = AuthState.AUTHORIZED
-        mock_svc.get_client = MagicMock(return_value=mock_client)
+        mock_svc.get_client = AsyncMock(return_value=mock_client)
         mock_client.get_entity = AsyncMock(return_value=MagicMock())
 
         # Only text messages (no media)

@@ -227,7 +227,7 @@ async def sync_channel(
 
     # 2. Get authorized client
     svc = _require_authorized()
-    client = svc.get_client()
+    client = await svc.get_client()
 
     # 3. Create SyncTask
     now = datetime.now(timezone.utc)

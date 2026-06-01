@@ -46,7 +46,7 @@ def _make_mock_authorized_svc() -> MagicMock:
     svc.auth_state = AuthState.AUTHORIZED
     svc.is_authorized = AsyncMock(return_value=True)
     mock_client = AsyncMock()
-    svc.get_client = MagicMock(return_value=mock_client)
+    svc.get_client = AsyncMock(return_value=mock_client)
     return svc, mock_client
 
 

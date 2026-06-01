@@ -28,7 +28,7 @@ class CreateChannelRequest(BaseModel):
         return self
 
 
-def _require_authorized_client():
+async def _require_authorized_client():
     """Get an authorized Telegram client or raise HTTP error."""
     svc = get_telegram_service()
     if svc is None:
@@ -41,7 +41,7 @@ def _require_authorized_client():
             status_code=400,
             detail="Telegram client not authorized. Please complete login via /api/auth first.",
         )
-    return svc.get_client()
+    return await svc.get_client()
 
 
 def _channel_to_dict(channel: Channel) -> dict:
@@ -68,7 +68,7 @@ async def discover_channels(db: AsyncSession = Depends(get_db)):
     - tg_id, username, title from Telegram
     - already_tracked: whether this channel already exists in the database
     """
-    client = _require_authorized_client()
+    client = await _require_authorized_client()
 
     # Fetch existing tg_ids for already_tracked check (single query, not N+1)
     result = await db.execute(select(Channel.tg_id))
@@ -117,7 +117,7 @@ async def create_channel(req: CreateChannelRequest, db: AsyncSession = Depends(g
     Returns 404 if the entity is not found on Telegram.
     Returns 409 if the channel already exists in the database.
     """
-    client = _require_authorized_client()
+    client = await _require_authorized_client()
 
     # Resolve the Telegram entity to get tg_id, username, title
     try:
