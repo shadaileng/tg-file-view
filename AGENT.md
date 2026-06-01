@@ -4,9 +4,41 @@
 
 ---
 
-## Current Phase: Step 8 — 配置管理 API (热更新 DB config) ✅
+## Current Phase: 启动脚本 + 开发工具 ✅
 
-**分支**: `feat/config-api`
+**分支**: `feat/thumbnail-task-queue`
+
+### 变更范围矩阵
+
+| 变更点 | 影响模块 | 破坏性变更 |
+|--------|---------|:---:|
+| 新增 `scripts/dev.sh` 开发模式一键启动 | scripts/ | 否 |
+| 新增 `scripts/start.sh` 生产模式启动 | scripts/ | 否 |
+| 更新 `README.md` 项目结构和运行章节 | 文档 | 否 |
+
+### 场景设计
+
+#### S1 — 开发模式首次启动
+```
+GIVEN 端口 8000/5173 空闲
+WHEN  ./scripts/dev.sh
+THEN  自动清理端口 → 后台启动 uvicorn --reload :8000 → 等待后端就绪 → 前台启动 Vite dev :5173
+      Ctrl+C 自动清理所有进程
+```
+
+#### S2 — 端口被旧实例占用
+```
+GIVEN 端口 8000 被残留进程占用
+WHEN  ./scripts/dev.sh 或 ./scripts/start.sh
+THEN  自动 fuser -k 杀掉旧进程 → 正常启动
+```
+
+#### S3 — 生产模式启动
+```
+GIVEN frontend/node_modules 已安装
+WHEN  ./scripts/start.sh
+THEN  自动 pnpm build → 启动 uvicorn :8000 serve SPA → 访问 localhost:8000 使用
+```
 
 ### API 端点设计
 
@@ -250,7 +282,7 @@ TelegramService.auth_state: Enum
 | 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ |
 | 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ |
 | 8 | 配置管理 API (热更新 DB config) | 12 | ✅ |
-| 9 | Vue 3 + Tailwind 前端 | ~15 | ⏳ |
+| 9 | Vue 3 + Tailwind 前端 | ~15 | ✅ |
 | 10 | Docker + HF Space 部署 | ~5 | ⏳ |
 
 ---
