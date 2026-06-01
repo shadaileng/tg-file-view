@@ -82,13 +82,22 @@ class TelegramService:
         return None
 
     async def _ensure_client(self) -> TelegramClient:
-        """Create or return the existing client."""
+        """Create or return the existing client.
+
+        Lazy-initializes the Telethon client, ensuring the session file's
+        parent directory exists (important for custom session paths under
+        data/ or Docker persistent volumes).
+        """
         if self._client is not None:
             return self._client
 
         async with self._lock:
             if self._client is not None:
                 return self._client
+
+            # Ensure parent directory exists for the session file
+            session_dir = Path(self.session_name).parent
+            session_dir.mkdir(parents=True, exist_ok=True)
 
             client = TelegramClient(
                 self.session_name,
@@ -100,12 +109,21 @@ class TelegramService:
             return client
 
     async def is_authorized(self) -> bool:
-        """Check if client exists and is authorized."""
-        if self._client is None:
-            return False
+        """Check if client exists and is authorized.
+
+        Lazy-initializes the client if needed so that a persisted session
+        file on disk is automatically loaded — no re-login required after
+        service restart.
+        """
+        client = await self._ensure_client()
         try:
-            return await self._client.is_user_authorized()
-        except Exception:
+            await client.connect()  # Telethon 需要活动连接才能调用 is_user_authorized()
+            result = await client.is_user_authorized()
+            if result:
+                self.auth_state = AuthState.AUTHORIZED  # 同步状态，前端 authStatus 才能正确展示
+            return result
+        except Exception as e:
+            logger.warning("is_authorized check failed: %s", e)
             return False
 
     async def send_code(self) -> bool:
