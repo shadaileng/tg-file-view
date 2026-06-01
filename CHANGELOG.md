@@ -1,6 +1,41 @@
 # 开发日志 (CHANGELOG)
 
-## fix: 修复登出后认证状态 + 发现频道按钮无响应 ✅ 180/180 PASS
+## fix: 修复重启后授权状态 + session 迁移到 data/ 目录
+
+### 问题
+1. **重启后显示"未授权"**：`is_authorized()` 在 `_client is None` 时直接返回 `False`，不去加载磁盘上的 `.session` 文件，导致每次重启都需要重新登录
+2. **session 文件在项目根目录**：Docker 容器重建后 `.session` 文件会丢失（无持久化卷）
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `services/telegram_client.py` | `is_authorized()` 改为调用 `_ensure_client()` 懒加载客户端；`_ensure_client()` 新增 session 父目录自动创建 |
+| `main.py` | TelegramService 的 `session_name` 改为 `data/tg_file_viewer`，session 文件统一存入 data 目录 |
+
+### 场景→测试映射
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 有效 session 自动恢复授权 | `test_is_authorized_with_valid_session` | 单元 |
+| E1 | 无 session 返回 False | `test_not_authorized_initially` | 单元 |
+| E2 | 网络异常不崩溃 | `test_is_authorized_handles_exception` | 单元 |
+| — | 懒创建客户端 | `test_is_authorized_lazy_creates_client` | 单元 |
+
+### 测试
+- 全量 pytest 回归：183/183 PASS ✅
+
+### 补充修复：`is_authorized()` 缺少 `connect()` 导致实际运行时仍显示"未授权"
+
+**根因**：v1 修复中的 `is_authorized()` 虽然通过 `_ensure_client()` 加载了 session 文件，但直接调用 `client.is_user_authorized()` 时未先 `connect()`，Telethon v1.32+ 的 `is_user_authorized()` 内部调用 `get_me()` RPC，需要活动连接。异常被 `except Exception: return False` 静默吞掉，前端始终看到 `is_authorized=false`。
+
+**修复**：在 `is_authorized()` 中增加 `await client.connect()`，成功后同步 `self.auth_state = AuthState.AUTHORIZED`，异常通过 `logger.warning` 记录。
+
+| 文件 | 变更 |
+|------|------|
+| `services/telegram_client.py` | `is_authorized()` 增加 connect() + 同步 auth_state + 异常日志 |
+
+---
 
 ### 问题
 1. **登出后无法重新登录**：`logout()` 中调用 `reset_telegram_service()` 销毁全局 service 实例，导致 `auth_status()` 返回 `not_configured`，前端检测后不显示登录界面
