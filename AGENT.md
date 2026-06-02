@@ -4,59 +4,61 @@
 
 ---
 
-## Current Phase: fix/session-persist-restart — 修复重启后显示未授权 + session 迁移到 data/ ✅
+## Current Phase: fix/sync-progress-realtime — 修复同步进度实时更新 & 信息不完整 ✅
 
-**分支**: `fix/session-persist-restart`
+**分支**: `fix/sync-progress-realtime`
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| `is_authorized()` 调用 `_ensure_client()` 而非短路返回 | `services/telegram_client.py` | 否 |
-| `_ensure_client()` 创建 session 父目录 | `services/telegram_client.py` | 否 |
-| session 路径从项目根改到 `data/tg_file_viewer` | `main.py` | 否（需迁移旧文件） |
+| `sync_channel` 增加 `task_id` 参数，复用 API 创建的任务 | `services/sync_engine.py` | 否 |
+| `_bg_sync` 传递 `task_id` 给 `sync_channel` | `api/sync.py` | 否 |
+| 批量插入时实时更新 `total_files` | `services/sync_engine.py` | 否 |
+| 同步完成后更新 channel 统计 (file_count, total_size) | `services/sync_engine.py` | 否 |
+| 页面加载时自动检测运行中任务并恢复轮询 | `frontend/src/views/SyncView.vue` | 否 |
 
 ### 场景设计
 
-#### S1 — Happy Path: 重启后自动恢复授权
+#### S1 — Happy Path: 同步进度实时更新
 ```
-GIVEN data/tg_file_viewer.session 存在且有效
-WHEN  服务启动 → 前端 GET /api/auth/status
-THEN  is_authorized() → _ensure_client() → TelegramClient("data/tg_file_viewer")
-      → Telethon 自动从磁盘加载 session → True
-      → 前端显示"已授权"，无需重新登录
-```
-
-#### S2 — Happy Path: Docker 持久卷恢复
-```
-GIVEN /data/tg_file_viewer.session 在持久卷上
-WHEN  容器重建后启动 → GET /api/auth/status
-THEN  同 S1，session 从持久卷自动恢复
+GIVEN 频道未同步
+WHEN  用户触发同步
+THEN  前端每 2 秒轮询可见 synced_files/total_files 实时百分比进度
+      同步完成后任务状态为 completed，channel.file_count 和 total_size 已更新
 ```
 
-#### E1 — Edge: session 文件不存在
+#### S2 — Edge: 页面刷新恢复运行中任务
 ```
-GIVEN data/tg_file_viewer.session 不存在
-WHEN  is_authorized() 调用
-THEN  is_user_authorized() = False → 前端显示"未授权"
-      可正常发送验证码登录（登录后 session 写入 data/）
+GIVEN 同步正在运行 (status=running)
+WHEN  用户刷新页面 → 选择该频道
+THEN  watch 自动检测到 running 任务 → 恢复 activeSync 并启动轮询
 ```
 
-#### E2 — Edge: session 损坏/网络不通
+#### S3 — Edge: 取消同步
 ```
-GIVEN session 文件损坏或 Telegram 不可达
-WHEN  is_authorized() 调用
-THEN  try/except 捕获异常 → False，不崩溃
+GIVEN 同步正在运行
+WHEN  用户点击取消
+THEN  任务状态变为 cancelled，channel.last_sync 不更新
+      轮询停止，历史列表更新
+```
+
+#### S4 — Edge: 重复触发
+```
+GIVEN 同步已在运行
+WHEN  再次点击"开始同步"
+THEN  返回 409 Conflict（已有逻辑，不受影响）
 ```
 
 ### 场景→测试映射
 
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
-| S1 | 有效 session 恢复授权 | `test_is_authorized_with_valid_session` | 单元 |
-| E1 | 无 session 返回 False | `test_not_authorized_initially` | 单元 |
-| E2 | 异常捕获返回 False | `test_is_authorized_handles_exception` | 单元 |
-| — | 懒创建客户端 | `test_is_authorized_lazy_creates_client` | 单元 |
+| S1 | API 创建的 task_id 被 sync_channel 复用 | `test_sync_with_existing_task_id` | 集成 |
+| S2 | 不存在的 task_id 抛异常 | `test_sync_task_id_not_found` | 集成 |
+| — | total_files 在同步过程中更新 | `test_total_files_updates_during_sync` | 集成 |
+| — | channel 统计在同步完成后更新 | `test_sync_updates_channel_stats` | 集成 |
+| — | 前端 watch 检测 running 任务 | 手动验证 (Vue, 无自动化) | 手动 |
 
 #### S2 — Happy Path: 发现频道按钮正常加载
 ```

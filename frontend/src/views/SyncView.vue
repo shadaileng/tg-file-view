@@ -268,6 +268,12 @@ watch(selectedChannelId, async (newVal) => {
     } else {
       lastSyncTime.value = null
     }
+    // Auto-detect running tasks and restore polling (Bug #4 fix)
+    const running = tasks.value.find(t => t.status === 'running' || t.status === 'pending')
+    if (running && !activeSync.value) {
+      activeSync.value = running
+      startPolling()
+    }
   }
 })
 

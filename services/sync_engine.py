@@ -201,6 +201,7 @@ async def sync_channel(
     channel_id: int,
     db_session: AsyncSession,
     settings: Settings,
+    task_id: Optional[str] = None,
 ) -> SyncTask:
     """Run a full/incremental sync for a single channel.
 
@@ -212,6 +213,10 @@ async def sync_channel(
         channel_id: Database ID of the channel to sync.
         db_session: Active SQLAlchemy async session.
         settings: Application settings (batch_size, etc.).
+        task_id: Optional UUID of an existing pending SyncTask to reuse.
+                 When provided, the existing task is looked up and updated
+                 instead of creating a new one, fixing the task-ID disconnect
+                 between the API and the sync engine.
 
     Returns:
         The SyncTask ORM record (committed, status = "completed" or "failed").
@@ -229,15 +234,24 @@ async def sync_channel(
     svc = _require_authorized()
     client = await svc.get_client()
 
-    # 3. Create SyncTask
-    now = datetime.now(timezone.utc)
-    task = SyncTask(
-        channel_id=channel_id,
-        status="running",
-        started_at=now,
-    )
-    db_session.add(task)
-    await db_session.commit()
+    # 3. Reuse or create SyncTask
+    if task_id is not None:
+        task = await db_session.get(SyncTask, task_id)
+        if task is None:
+            raise ValueError(f"SyncTask with id={task_id} not found")
+        # Transition pending→running, preserving the original task record
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc)
+        await db_session.commit()
+    else:
+        now = datetime.now(timezone.utc)
+        task = SyncTask(
+            channel_id=channel_id,
+            status="running",
+            started_at=now,
+        )
+        db_session.add(task)
+        await db_session.commit()
 
     logger.info(
         "Sync started: channel_id={} task_id={}",
@@ -273,9 +287,13 @@ async def sync_channel(
 
             if len(batch) >= settings.sync_batch_size:
                 s, k = await _batch_insert_files(batch, db_session, task, channel_id)
+                # Update total_files in real-time so the frontend can show
+                # "synced / total" progress during polling (Bug #2 fix)
+                task.total_files = total_processed
+                await db_session.commit()
                 logger.debug(
-                    "Batch insert: synced={} skipped={} batch_size={}",
-                    s, k, len(batch),
+                    "Batch insert: synced={} skipped={} batch_size={} total_processed={}",
+                    s, k, len(batch), total_processed,
                 )
                 batch = []
 
@@ -293,6 +311,18 @@ async def sync_channel(
             task.status = "completed"
         task.completed_at = datetime.now(timezone.utc)
         channel.last_sync = datetime.now(timezone.utc)
+
+        # Update channel statistics (Bug #3 fix)
+        file_count_result = await db_session.execute(
+            select(func.count(File.id)).where(File.channel_id == channel_id)
+        )
+        channel.file_count = file_count_result.scalar() or 0
+
+        total_size_result = await db_session.execute(
+            select(func.sum(File.file_size)).where(File.channel_id == channel_id)
+        )
+        channel.total_size = total_size_result.scalar() or 0
+
         await db_session.commit()
 
         logger.info(

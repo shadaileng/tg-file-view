@@ -1,5 +1,28 @@
 # 开发日志 (CHANGELOG)
 
+## fix: 同步进度实时更新 & 信息不完整 (Bug #1-#4)
+
+### 问题
+1. **Task ID 断层**：API (`trigger_sync`) 创建 SyncTask 返回给前端，但 `sync_channel` 内部又创建一个新任务，导致前端轮询永远看不到进度
+2. **total_files 只在同步完成后才非零**：前端无法展示 `N/M` 百分比进度，始终显示 `N/?`
+3. **channel 统计从未更新**：同步完成后只更新 `last_sync`，`file_count` 和 `total_size` 始终为 0
+4. **页面刷新后无法恢复**：页面加载时不检测运行中任务，用户看不到进行中的同步
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `services/sync_engine.py` | `sync_channel` 增加 `task_id` 参数；若传入则复用已有任务而非新建；批量插入后实时 commit `total_files`；同步完成后 UPDATE channel 统计 |
+| `api/sync.py` | `_bg_sync` 将 API 创建的 `task_id` 传递给 `sync_channel` |
+| `frontend/src/views/SyncView.vue` | `watch(selectedChannelId)` 自动检测 running/pending 任务并恢复轮询 |
+| `tests/test_sync_engine.py` | 新增 4 个测试：task_id 复用、task_id 不存在、total_files 实时更新、channel 统计更新 |
+
+### 测试
+- 全量 pytest 回归：187/187 PASS ✅
+- 新增测试：4/4 PASS ✅
+
+---
+
 ## fix: get_client() 缺少 await 导致运行时错误
 
 ### 问题

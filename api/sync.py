@@ -56,6 +56,8 @@ async def _bg_sync(channel_id: int, task_id: str):
     """Background coroutine that runs the actual sync.
 
     Creates its own database session for isolation from the HTTP request.
+    Passes task_id so sync_channel reuses the API-created task instead
+    of creating a new one (Bug #1 fix).
     """
     from database import AsyncSessionLocal
     from services.sync_engine import sync_channel
@@ -63,7 +65,7 @@ async def _bg_sync(channel_id: int, task_id: str):
     async with AsyncSessionLocal() as session:
         try:
             settings = Settings()
-            await sync_channel(channel_id, session, settings)
+            await sync_channel(channel_id, session, settings, task_id=task_id)
         except Exception as e:
             logger.error("Background sync failed: channel_id={} task_id={} error={}",
                          channel_id, task_id, e)
