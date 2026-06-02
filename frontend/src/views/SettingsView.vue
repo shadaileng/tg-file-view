@@ -94,7 +94,7 @@
           @keyup.enter="handleSave"
         />
 
-        <div v-if="editTarget.key === 'admin_password'" class="mt-2">
+        <div class="mt-2">
           <label class="text-xs text-gray-400 mb-1 block">管理员密码（必填）</label>
           <input
             v-model="adminPassword"
@@ -144,7 +144,7 @@ const adminPassword = ref('')
 const CONFIG_GROUPS = {
   telegram: {
     label: 'Telegram 配置',
-    description: '与 Telegram 服务器通信的凭据，不可通过界面修改',
+    description: 'api_id / api_hash 为应用凭据（只读），phone / bot_token / proxy_url 可通过界面修改',
     keys: ['api_id', 'api_hash', 'phone', 'bot_token', 'proxy_url'],
   },
   sync: {
@@ -186,7 +186,7 @@ const groupedConfigs = computed(() => {
 
 // ---- Readonly / sensitive ----
 // Matches backend config.READONLY_CONFIG_KEYS
-const READONLY_KEYS = ['api_id', 'api_hash', 'phone', 'bot_token', 'proxy_url', 'admin_password']
+const READONLY_KEYS = ['api_id', 'api_hash', 'host', 'port', 'debug', 'admin_password']
 
 function isReadonly(key) {
   return READONLY_KEYS.includes(key)

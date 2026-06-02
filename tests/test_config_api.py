@@ -199,9 +199,9 @@ class TestConfigAPI:
             detail = resp.json()["detail"].lower()
             assert "must be <=" in detail or "thumb_workers" in detail
 
-    # ── Edge: Boolean validation ──
-    async def test_update_bool_invalid(self, db_session):
-        """PUT debug=notabool → 400."""
+    # ── Edge: Attempt to modify readonly key (deployment param) ──
+    async def test_update_readonly_key_rejected(self, db_session):
+        """PUT readonly key 'debug' → 403 (not 400, readonly check comes first)."""
         from main import app
         from config import set_config_value
 
@@ -214,8 +214,8 @@ class TestConfigAPI:
                 json={"value": "notabool"},
                 headers={"X-Admin-Password": "secret123"},
             )
-            assert resp.status_code == 400
-            assert "boolean" in resp.json()["detail"].lower()
+            assert resp.status_code == 403
+            assert "read-only" in resp.json()["detail"].lower()
 
     # ── Edge: Float validation ──
     async def test_update_float_valid(self, db_session):
