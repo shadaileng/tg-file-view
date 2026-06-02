@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from loguru import logger
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -37,14 +38,38 @@ class Base(DeclarativeBase):
     pass
 
 
+async def _migrate_schema():
+    """Run additive schema migrations for new columns added to existing models.
+
+    SQLAlchemy's create_all() only creates tables, it never alters existing
+    ones.  This function applies ALTER TABLE ADD COLUMN for each new field
+    that was added since the last deployment.
+    """
+    # Migration: 2026-06-02 — add phase/progress to sync_tasks
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE sync_tasks ADD COLUMN phase VARCHAR(20) NOT NULL DEFAULT 'pending'")
+            )
+            await conn.execute(
+                text("ALTER TABLE sync_tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0")
+            )
+        logger.info("Migration: added phase/progress columns to sync_tasks")
+    except Exception:
+        # Columns already exist (duplicate migration or fresh create_all)
+        pass
+
+
 async def init_db(drop_first: bool = False):
-    """Initialize database: create all tables."""
+    """Initialize database: create all tables and run schema migrations."""
     logger.info("Initializing database at {} (drop_first={})", DB_PATH, drop_first)
     try:
         async with engine.begin() as conn:
             if drop_first:
                 await conn.run_sync(Base.metadata.drop_all)
             await conn.run_sync(Base.metadata.create_all)
+        # Run schema migrations (adds columns for model updates)
+        await _migrate_schema()
         logger.info("Database tables created successfully")
     except Exception as e:
         logger.error("Database initialization failed: {}", e)

@@ -61,6 +61,28 @@ def _get_file_ref(message) -> Optional[str]:
     return None
 
 
+# ── Phase-based progress tracking ──────────────────────────────────────────────
+# Each sync phase maps to a percentage range so the frontend can display
+# a multi-phase progress bar rather than a single "synced/total" number.
+PHASE_RANGES = {
+    "pending":    (0,   0),
+    "connecting": (0,   5),
+    "scanning":   (5,  55),
+    "inserting":  (55, 90),
+    "finalizing": (90, 100),
+}
+
+
+def _calc_progress(phase: str, sub_progress: float) -> int:
+    """Calculate overall 0-100 progress from current phase and sub-progress.
+    
+    sub_progress should be 0.0~1.0 indicating how far through the current phase
+    we are.  The return value is clamped to the phase's ceiling.
+    """
+    base, ceiling = PHASE_RANGES.get(phase, (0, 100))
+    return min(int(base + sub_progress * (ceiling - base)), ceiling)
+
+
 def _detect_file_type(doc_attrs: list) -> str:
     """Determine file type from DocumentAttribute instances.
 
@@ -262,6 +284,11 @@ async def sync_channel(
         # 4. Resolve Telegram entity
         entity = await client.get_entity(channel.tg_id)
 
+        # Phase 1: connecting → done (5%)
+        task.phase = "connecting"
+        task.progress = _calc_progress("connecting", 1.0)
+        await db_session.commit()
+
         # 5. Configure iter_messages args
         iter_kwargs = {"limit": settings.sync_bulk_api_limit}
         if channel.last_sync:
@@ -277,6 +304,11 @@ async def sync_channel(
             # Check cancellation
             await db_session.refresh(task)
             if task.status == "cancelled":
+                task.phase = "cancelled"
+                task.progress = _calc_progress(
+                    "scanning", total_processed / max(settings.sync_bulk_api_limit, 1)
+                )
+                await db_session.commit()
                 logger.info("Sync cancelled: task_id={}", task.id)
                 break
 
@@ -285,10 +317,23 @@ async def sync_channel(
             if file_info:
                 batch.append(file_info)
 
+            # Phase 2: scanning — update progress every 10 messages so the
+            # frontend sees movement even for small channels (fixes the
+            # "total_files stuck at 0" bug for channels with < batch_size msgs).
+            if total_processed % 10 == 0:
+                sub = total_processed / max(settings.sync_bulk_api_limit, 1)
+                task.phase = "scanning"
+                task.progress = _calc_progress("scanning", min(sub, 1.0))
+                task.total_files = total_processed
+                await db_session.commit()
+
             if len(batch) >= settings.sync_batch_size:
                 s, k = await _batch_insert_files(batch, db_session, task, channel_id)
-                # Update total_files in real-time so the frontend can show
-                # "synced / total" progress during polling (Bug #2 fix)
+                # Phase 3: inserting — progress driven by files actually processed
+                inserted_total = task.synced_files + task.skipped_files
+                sub = inserted_total / max(total_processed, 1)
+                task.phase = "inserting"
+                task.progress = _calc_progress("inserting", min(sub, 1.0))
                 task.total_files = total_processed
                 await db_session.commit()
                 logger.debug(
@@ -305,11 +350,13 @@ async def sync_channel(
                 s, k, len(batch),
             )
 
-        # 8. Finalize task and update channel
+        # Phase 3→4: entering finalizing stage (update channel statistics)
+        task.phase = "finalizing"
+        task.progress = _calc_progress("finalizing", 0.5)
         task.total_files = total_processed
-        if task.status != "cancelled":
-            task.status = "completed"
-        task.completed_at = datetime.now(timezone.utc)
+        await db_session.commit()
+
+        # 8. Finalize task and update channel
         channel.last_sync = datetime.now(timezone.utc)
 
         # Update channel statistics (Bug #3 fix)
@@ -323,6 +370,13 @@ async def sync_channel(
         )
         channel.total_size = total_size_result.scalar() or 0
 
+        # Phase 4→done
+        task.total_files = total_processed
+        if task.status != "cancelled":
+            task.status = "completed"
+            task.phase = "completed"
+            task.progress = 100
+        task.completed_at = datetime.now(timezone.utc)
         await db_session.commit()
 
         logger.info(
@@ -338,6 +392,7 @@ async def sync_channel(
         # Mark task as failed, preserve partial progress
         await db_session.refresh(task)
         task.status = "failed"
+        task.phase = "failed"
         existing_errors = json.loads(task.errors or "[]")
         existing_errors.append(str(e))
         task.errors = json.dumps(existing_errors)

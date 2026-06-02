@@ -4,9 +4,103 @@
 
 ---
 
-## Current Phase: fix/sync-progress-realtime — 修复同步进度实时更新 & 信息不完整 ✅
+## Current Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
 
-**分支**: `fix/sync-progress-realtime`
+**分支**: `feat/sync-phase-progress`
+
+### 需求背景
+用户反馈：同步过程中进度不更新（`0 / ?`），synced=0 skipped=14 时误以为"没同步上"，全过程缺乏分阶段感知。
+
+### 变更范围矩阵
+
+| 变更点 | 影响模块 | 破坏性变更 |
+|--------|---------|:---:|
+| SyncTask 新增 `phase`(str) + `progress`(int) 字段 | `models.py` | 是（需迁移） |
+| sync_channel 5 阶段进度上报 (connecting→scanning→inserting→finalizing→completed) | `services/sync_engine.py` | 否 |
+| `_sync_task_to_dict` 暴露 phase/progress | `api/sync.py` | 否 |
+| 前端进度面板重设计：阶段指示器 + 详细统计 | `frontend/src/views/SyncView.vue` | 否 |
+| schema 迁移：ALTER TABLE sync_tasks 添加新列 | `database.py` | 否 |
+
+### 分阶段设计
+
+| Phase Key | 中文 | 百分比区间 | 进度触发条件 |
+|-----------|------|:---:|------------|
+| `pending` | 等待 | 0% | 任务创建后 |
+| `connecting` | 连接频道 | 0%→5% | `get_entity()` 完成后 |
+| `scanning` | 扫描消息 | 5%→55% | 每 10 条消息 commit 一次 |
+| `inserting` | 入库处理 | 55%→90% | 每次 _batch_insert_files 后 |
+| `finalizing` | 更新统计 | 90%→100% | channel 统计更新 |
+| `completed` | 完成 | 100% | 任务结束 |
+
+### 场景设计
+
+#### S1 — Happy Path: 分阶段进度交互
+```
+GIVEN 频道未同步，点击"开始同步"
+WHEN  同步进行
+THEN  前端展示 5 阶段指示器：连接→扫描→入库→统计→完成
+      进度条从 5%→55%→90%→100% 逐步推进
+      统计面板显示：已扫描 N、新增 +M、跳过 K
+      同步完成后任务状态变 completed
+```
+
+#### S2 — Edge: synced=0 skipped=N 全量跳过
+```
+GIVEN 频道已完全同步
+WHEN  用户再次触发同步
+THEN  阶段指示器正常流转（scanning→inserting→completed）
+      新增显示 +0，跳过显示 K（非零），用户明确知道已全量匹配
+```
+
+#### S3 — Edge: 小频道（消息数 < batch_size）
+```
+GIVEN 频道仅 16 条消息，sync_batch_size=500
+WHEN  同步进行
+THEN  每 10 条消息更新一次 total_files 和进度（不再 stuck at 0）
+      阶段指示器正常推进，3 秒内完成也不会有"空白期"
+```
+
+#### S4 — Edge: 取消同步
+```
+GIVEN 同步正在 scanning 阶段
+WHEN  用户点击"取消同步"
+THEN  任务 phase→cancelled，进度条冻结在当前值变灰
+      轮询停止，历史列表更新
+```
+
+#### S5 — Edge: 同步异常
+```
+GIVEN Telegram 连接异常
+WHEN  sync_channel 抛异常
+THEN  任务 phase→failed，进度条变红
+      错误详情记录在 errors 字段
+```
+
+### 场景→测试映射
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | 分阶段进度正常流转 | `test_sync_full` | 集成 |
+| S2 | synced=0 全量跳过 | `test_sync_incremental` | 集成 |
+| S3 | 小频道 total_files 实时更新 | `test_total_files_updates_during_sync` | 集成 |
+| S4 | 取消同步 | 手动验证 (浏览器) | 手动 |
+| S5 | 同步异常 | `test_sync_unauthorized` | 集成 |
+| — | phase/progress 字段持久化 | `test_sync_with_existing_task_id` | 集成 |
+
+### 数据库迁移
+
+```sql
+ALTER TABLE sync_tasks ADD COLUMN phase VARCHAR(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE sync_tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+```
+
+迁移于 `database.py::_migrate_schema()` 自动化执行。
+
+---
+
+## 完成记录: fix/sync-progress-realtime — 修复同步进度实时更新 & 信息不完整 ✅
+
+**分支**: `fix/sync-progress-realtime` (已合并)
 
 ### 变更范围矩阵
 

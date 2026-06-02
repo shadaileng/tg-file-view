@@ -35,7 +35,7 @@
       </div>
     </div>
 
-    <!-- Current sync progress -->
+    <!-- Current sync progress (phase-based) -->
     <div
       v-if="activeSync"
       class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5"
@@ -43,31 +43,83 @@
       <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-3">
         同步进行中 — 任务 {{ activeSync.id?.slice(0, 8) }}...
       </h3>
-      <div class="space-y-2">
-        <div class="flex justify-between text-sm">
-          <span class="text-gray-500 dark:text-gray-400">状态</span>
+
+      <!-- 阶段指示器 -->
+      <div class="flex justify-between mb-4">
+        <div
+          v-for="(ph, i) in phases"
+          :key="ph.key"
+          class="flex flex-col items-center flex-1 relative"
+        >
+          <!-- connector line (left half for first item is hidden) -->
+          <div
+            v-if="i > 0"
+            class="absolute right-1/2 top-4 w-full h-0.5 -z-0"
+            :class="
+              phaseIdx('connecting') >= 0 && phaseOrder.indexOf(ph.key) <= phaseOrder.indexOf(activeSync.phase)
+                ? 'bg-indigo-400 dark:bg-indigo-500'
+                : 'bg-gray-200 dark:bg-gray-700'
+            "
+          />
+          <span class="text-lg z-10 bg-white dark:bg-gray-800 px-1">{{ ph.icon }}</span>
           <span
-            class="px-2 py-0.5 rounded-full text-xs font-medium"
-            :class="statusClass(activeSync.status)"
-          >{{ activeSync.status }}</span>
+            class="text-xs mt-1 font-medium"
+            :class="phaseClass(ph.key)"
+          >{{ ph.label }}</span>
         </div>
-        <div class="flex justify-between text-sm">
-          <span class="text-gray-500 dark:text-gray-400">进度</span>
-          <span class="text-gray-800 dark:text-gray-200">
-            {{ activeSync.synced_files || 0 }} / {{ activeSync.total_files || '?' }}
+      </div>
+
+      <!-- 整体进度条 -->
+      <div class="mb-3">
+        <div class="flex justify-between text-xs mb-1">
+          <span class="text-gray-500 dark:text-gray-400">{{ phaseLabel }}</span>
+          <span class="text-gray-600 dark:text-gray-300 font-semibold">
+            {{ activeSync.progress ?? 0 }}%
           </span>
         </div>
-        <div v-if="activeSync.errors && activeSync.errors.length" class="text-xs text-red-500">
-          错误: {{ activeSync.errors.join(', ') }}
+        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+          <div
+            class="h-2.5 rounded-full transition-all duration-500"
+            :class="progressBarClass"
+            :style="{ width: (activeSync.progress ?? 0) + '%' }"
+          />
         </div>
-        <button
-          v-if="activeSync.status === 'running'"
-          @click="cancelActive"
-          class="mt-2 px-3 py-1 text-xs bg-red-500 hover:bg-red-600 text-white rounded transition-colors"
-        >
-          取消同步
-        </button>
       </div>
+
+      <!-- 详细统计 -->
+      <div class="grid grid-cols-3 gap-3 text-center text-sm bg-gray-50 dark:bg-gray-700/50 rounded-lg p-3">
+        <div>
+          <div class="text-gray-400 text-xs">已扫描</div>
+          <div class="font-semibold text-gray-800 dark:text-gray-200">
+            {{ activeSync.total_files ?? 0 }}
+          </div>
+        </div>
+        <div>
+          <div class="text-green-500 text-xs">新增</div>
+          <div class="font-semibold text-green-600 dark:text-green-400">
+            +{{ activeSync.synced_files ?? 0 }}
+          </div>
+        </div>
+        <div>
+          <div class="text-amber-500 text-xs">跳过</div>
+          <div class="font-semibold text-amber-600 dark:text-amber-400">
+            {{ activeSync.skipped_files ?? 0 }}
+          </div>
+        </div>
+      </div>
+
+      <!-- 错误 -->
+      <div v-if="activeSync.errors?.length" class="mt-3 text-xs text-red-500">
+        错误: {{ activeSync.errors.join(', ') }}
+      </div>
+
+      <button
+        v-if="activeSync.status === 'running'"
+        @click="cancelActive"
+        class="mt-3 w-full px-3 py-2 text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
+      >
+        取消同步
+      </button>
     </div>
 
     <!-- Task history -->
@@ -137,7 +189,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
 import { channelsApi, syncApi } from '../api/index'
 
 const channels = ref([])
@@ -159,6 +211,59 @@ function statusClass(status) {
     pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
   }
   return map[status] || 'bg-gray-100 text-gray-600'
+}
+
+// ── Phase-based progress helpers ──────────────────────────────────────────
+
+const phases = [
+  { key: 'connecting', icon: '🔗', label: '连接' },
+  { key: 'scanning',   icon: '🔍', label: '扫描' },
+  { key: 'inserting',  icon: '💾', label: '入库' },
+  { key: 'finalizing', icon: '📊', label: '统计' },
+  { key: 'completed',  icon: '✅', label: '完成' },
+]
+
+const phaseOrder = phases.map(p => p.key)
+
+function phaseIdx(key) {
+  return phaseOrder.indexOf(key)
+}
+
+const phaseLabel = computed(() => {
+  const p = activeSync.value?.phase
+  const map = {
+    pending:    '⏳ 等待开始...',
+    connecting: '🔗 正在连接频道...',
+    scanning:   '🔍 正在扫描消息...',
+    inserting:  '💾 正在入库处理...',
+    finalizing: '📊 正在更新统计...',
+    completed:  '✅ 同步完成',
+    failed:     '❌ 同步失败',
+    cancelled:  '⛔ 同步已取消',
+  }
+  return map[p] || '处理中...'
+})
+
+const progressBarClass = computed(() => {
+  const p = activeSync.value?.phase
+  if (p === 'failed')    return 'bg-red-500'
+  if (p === 'completed') return 'bg-green-500'
+  if (p === 'cancelled') return 'bg-gray-400'
+  if (p === 'scanning')  return 'bg-blue-500'
+  if (p === 'inserting') return 'bg-indigo-500'
+  return 'bg-indigo-500'
+})
+
+function phaseClass(key) {
+  const current = activeSync.value?.phase
+  if (current === key) return 'text-indigo-600 dark:text-indigo-400 font-bold'
+  // completed phases shown in green; upcoming phases greyed out
+  const curIdx = phaseIdx(current)
+  const keyIdx = phaseIdx(key)
+  if (curIdx >= 0 && keyIdx >= 0 && keyIdx < curIdx) {
+    return 'text-green-500 dark:text-green-400'
+  }
+  return 'text-gray-300 dark:text-gray-600'
 }
 
 async function loadChannels() {

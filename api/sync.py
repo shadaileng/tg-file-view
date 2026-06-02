@@ -37,11 +37,14 @@ def _require_authorized():
 
 
 def _sync_task_to_dict(task: SyncTask) -> dict:
-    """Serialize a SyncTask to a JSON-safe dict."""
+    """Serialize a SyncTask to a JSON-safe dict, including phase/progress fields for
+    the frontend multi-phase progress panel."""
     return {
         "id": task.id,
         "channel_id": task.channel_id,
         "status": task.status,
+        "phase": task.phase,
+        "progress": task.progress,
         "total_files": task.total_files,
         "synced_files": task.synced_files,
         "skipped_files": task.skipped_files,

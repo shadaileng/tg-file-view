@@ -76,6 +76,12 @@ class SyncTask(Base):
     total_files: Mapped[int] = mapped_column(default=0)
     synced_files: Mapped[int] = mapped_column(default=0)
     skipped_files: Mapped[int] = mapped_column(default=0)
+    phase: Mapped[str] = mapped_column(
+        String(20), default="pending"
+    )  # pending / connecting / scanning / inserting / finalizing / completed / failed / cancelled
+    progress: Mapped[int] = mapped_column(
+        Integer, default=0
+    )  # 0-100
     errors: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

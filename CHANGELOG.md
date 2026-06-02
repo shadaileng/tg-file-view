@@ -1,5 +1,71 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 同步进度分阶段可视化 & 详细信息展示
+
+### 问题
+1. **进度不更新**：频道消息数 < batch_size（500）时 `total_files` 始终为 0，前端显示 `0 / ?`，直到 3 秒后突然完成
+2. **synced=0 误以为没同步**：全部消息已入库时 `synced=0, skipped=14`，用户困惑"为什么没同步上"
+3. **缺失过程感知**：同步只有 `0/? → 0/16` 的数值变化，无阶段体现（连接/扫描/入库/统计），用户感觉"没在工作"
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `models.py` | SyncTask 新增 `phase`(VARCHAR 20, default pending) + `progress`(INTEGER, default 0) 字段，支持分阶段进度追踪 |
+| `services/sync_engine.py` | 新增 `PHASE_RANGES` 和 `_calc_progress()`；在 `sync_channel` 的 5 个关键节点更新 phase/progress（connecting→5%、scanning→每 10 条→5-55%、inserting→55-90%、finalizing→90-100%、completed→100%）；取消/失败时同步写入 phase |
+| `api/sync.py` | `_sync_task_to_dict` 新增 `phase` 和 `progress` 字段，前端可直接使用 |
+| `frontend/src/views/SyncView.vue` | 进度面板重设计：5 阶段图标指示器（🔗连接→🔍扫描→💾入库→📊统计→✅完成）+ 百分比进度条 + 已扫描/新增/跳过三列统计；新增 `phaseLabel`/`progressBarClass`/`phaseClass` 计算属性 |
+| `database.py` | 新增 `_migrate_schema()` 自动迁移：ALTER TABLE sync_tasks ADD COLUMN phase/progress |
+
+### 分阶段设计
+
+| Phase | 区间 | 触发时机 | 前端效果 |
+|-------|:---:|---------|---------|
+| `pending` | 0% | 任务创建 | 等待连接 |
+| `connecting` | 0→5% | `get_entity()` 完成 | 🔗连接 高亮 |
+| `scanning` | 5→55% | 每 10 条消息 commit | 🔍扫描 高亮，进度条增长 |
+| `inserting` | 55→90% | 每次 batch insert 后 | 💾入库 高亮 |
+| `finalizing` | 90→100% | 更新 channel 统计 | 📊统计 高亮 |
+| `completed` | 100% | 任务结束 | ✅完成 全部绿色 |
+
+### 场景设计
+
+#### S1 — Happy Path: 分阶段进度交互
+```
+GIVEN 频道未同步，点击"开始同步"
+WHEN  同步进行
+THEN  前端展示 5 阶段指示器：连接→扫描→入库→统计→完成
+      进度条 0%→5%→55%→90%→100% 逐步推进
+      统计面板：已扫描 N、新增 +M、跳过 K
+```
+
+#### S2 — Edge: synced=0 skipped=N 全量跳过
+```
+GIVEN 频道已完全同步
+WHEN  用户再次触发同步
+THEN  阶段指示器正常流转，新增 +0，跳过 K（明确告知已全量匹配）
+```
+
+#### S3 — Edge: 小频道 total_files 不再 stuck at 0
+```
+GIVEN 频道仅 16 条消息（< batch_size 500）
+WHEN  同步进行
+THEN  每 10 条消息更新一次 total_files，不再显示 0/?
+```
+
+### 数据库迁移
+```sql
+ALTER TABLE sync_tasks ADD COLUMN phase VARCHAR(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE sync_tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+```
+迁移由 `database.py::_migrate_schema()` 自动执行（迁移幂等，重复执行不报错）。
+
+### 测试
+- 全量 pytest 回归：187/187 PASS ✅
+- 前端构建成功
+
+---
+
 ## fix: 同步进度实时更新 & 信息不完整 (Bug #1-#4)
 
 ### 问题
