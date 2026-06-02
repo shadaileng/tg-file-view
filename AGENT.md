@@ -4,59 +4,169 @@
 
 ---
 
-## Current Phase: fix/session-persist-restart — 修复重启后显示未授权 + session 迁移到 data/ ✅
+## Current Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
 
-**分支**: `fix/session-persist-restart`
+**分支**: `feat/sync-phase-progress`
+
+### 需求背景
+用户反馈：同步过程中进度不更新（`0 / ?`），synced=0 skipped=14 时误以为"没同步上"，全过程缺乏分阶段感知。
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| `is_authorized()` 调用 `_ensure_client()` 而非短路返回 | `services/telegram_client.py` | 否 |
-| `_ensure_client()` 创建 session 父目录 | `services/telegram_client.py` | 否 |
-| session 路径从项目根改到 `data/tg_file_viewer` | `main.py` | 否（需迁移旧文件） |
+| SyncTask 新增 `phase`(str) + `progress`(int) 字段 | `models.py` | 是（需迁移） |
+| sync_channel 5 阶段进度上报 (connecting→scanning→inserting→finalizing→completed) | `services/sync_engine.py` | 否 |
+| `_sync_task_to_dict` 暴露 phase/progress | `api/sync.py` | 否 |
+| 前端进度面板重设计：阶段指示器 + 详细统计 | `frontend/src/views/SyncView.vue` | 否 |
+| schema 迁移：ALTER TABLE sync_tasks 添加新列 | `database.py` | 否 |
+
+### 分阶段设计
+
+| Phase Key | 中文 | 百分比区间 | 进度触发条件 |
+|-----------|------|:---:|------------|
+| `pending` | 等待 | 0% | 任务创建后 |
+| `connecting` | 连接频道 | 0%→5% | `get_entity()` 完成后 |
+| `scanning` | 扫描消息 | 5%→55% | 每 10 条消息 commit 一次 |
+| `inserting` | 入库处理 | 55%→90% | 每次 _batch_insert_files 后 |
+| `finalizing` | 更新统计 | 90%→100% | channel 统计更新 |
+| `completed` | 完成 | 100% | 任务结束 |
 
 ### 场景设计
 
-#### S1 — Happy Path: 重启后自动恢复授权
+#### S1 — Happy Path: 分阶段进度交互
 ```
-GIVEN data/tg_file_viewer.session 存在且有效
-WHEN  服务启动 → 前端 GET /api/auth/status
-THEN  is_authorized() → _ensure_client() → TelegramClient("data/tg_file_viewer")
-      → Telethon 自动从磁盘加载 session → True
-      → 前端显示"已授权"，无需重新登录
-```
-
-#### S2 — Happy Path: Docker 持久卷恢复
-```
-GIVEN /data/tg_file_viewer.session 在持久卷上
-WHEN  容器重建后启动 → GET /api/auth/status
-THEN  同 S1，session 从持久卷自动恢复
+GIVEN 频道未同步，点击"开始同步"
+WHEN  同步进行
+THEN  前端展示 5 阶段指示器：连接→扫描→入库→统计→完成
+      进度条从 5%→55%→90%→100% 逐步推进
+      统计面板显示：已扫描 N、新增 +M、跳过 K
+      同步完成后任务状态变 completed
 ```
 
-#### E1 — Edge: session 文件不存在
+#### S2 — Edge: synced=0 skipped=N 全量跳过
 ```
-GIVEN data/tg_file_viewer.session 不存在
-WHEN  is_authorized() 调用
-THEN  is_user_authorized() = False → 前端显示"未授权"
-      可正常发送验证码登录（登录后 session 写入 data/）
+GIVEN 频道已完全同步
+WHEN  用户再次触发同步
+THEN  阶段指示器正常流转（scanning→inserting→completed）
+      新增显示 +0，跳过显示 K（非零），用户明确知道已全量匹配
 ```
 
-#### E2 — Edge: session 损坏/网络不通
+#### S3 — Edge: 小频道（消息数 < batch_size）
 ```
-GIVEN session 文件损坏或 Telegram 不可达
-WHEN  is_authorized() 调用
-THEN  try/except 捕获异常 → False，不崩溃
+GIVEN 频道仅 16 条消息，sync_batch_size=500
+WHEN  同步进行
+THEN  每 10 条消息更新一次 total_files 和进度（不再 stuck at 0）
+      阶段指示器正常推进，3 秒内完成也不会有"空白期"
+```
+
+#### S4 — Edge: 取消同步
+```
+GIVEN 同步正在 scanning 阶段
+WHEN  用户点击"取消同步"
+THEN  任务 phase→cancelled，进度条冻结在当前值变灰
+      轮询停止，历史列表更新
+```
+
+#### S5 — Edge: 同步异常
+```
+GIVEN Telegram 连接异常
+WHEN  sync_channel 抛异常
+THEN  任务 phase→failed，进度条变红
+      错误详情记录在 errors 字段
 ```
 
 ### 场景→测试映射
 
 | 场景 ID | 场景描述 | 对应测试函数 | 类型 |
 |---------|---------|-------------|------|
-| S1 | 有效 session 恢复授权 | `test_is_authorized_with_valid_session` | 单元 |
-| E1 | 无 session 返回 False | `test_not_authorized_initially` | 单元 |
-| E2 | 异常捕获返回 False | `test_is_authorized_handles_exception` | 单元 |
-| — | 懒创建客户端 | `test_is_authorized_lazy_creates_client` | 单元 |
+| S1 | 分阶段进度正常流转 | `test_sync_full` | 集成 |
+| S2 | synced=0 全量跳过 | `test_sync_incremental` | 集成 |
+| S3 | 小频道 total_files 实时更新 | `test_total_files_updates_during_sync` | 集成 |
+| S4 | 取消同步 | 手动验证 (浏览器) | 手动 |
+| S5 | 同步异常 | `test_sync_unauthorized` | 集成 |
+| — | phase/progress 字段持久化 | `test_sync_with_existing_task_id` | 集成 |
+
+### 数据库迁移
+
+```sql
+ALTER TABLE sync_tasks ADD COLUMN phase VARCHAR(20) NOT NULL DEFAULT 'pending';
+ALTER TABLE sync_tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
+```
+
+迁移于 `database.py::_migrate_schema()` 自动化执行。
+
+---
+
+## 完成记录: fix/sync-progress-realtime — 修复同步进度实时更新 & 信息不完整 ✅
+
+**分支**: `fix/sync-progress-realtime` (已合并)
+
+### 变更范围矩阵
+
+| 变更点 | 影响模块 | 破坏性变更 |
+|--------|---------|:---:|
+| `sync_channel` 增加 `task_id` 参数，复用 API 创建的任务 | `services/sync_engine.py` | 否 |
+| `_bg_sync` 传递 `task_id` 给 `sync_channel` | `api/sync.py` | 否 |
+| 批量插入时实时更新 `total_files` | `services/sync_engine.py` | 否 |
+| 同步完成后更新 channel 统计 (file_count, total_size) | `services/sync_engine.py` | 否 |
+| 页面加载时自动检测运行中任务并恢复轮询 | `frontend/src/views/SyncView.vue` | 否 |
+
+### 场景设计
+
+#### S1 — Happy Path: 同步进度实时更新
+```
+GIVEN 频道未同步
+WHEN  用户触发同步
+THEN  前端每 2 秒轮询可见 synced_files/total_files 实时百分比进度
+      同步完成后任务状态为 completed，channel.file_count 和 total_size 已更新
+```
+
+#### S2 — Edge: 页面刷新恢复运行中任务
+```
+GIVEN 同步正在运行 (status=running)
+WHEN  用户刷新页面 → 选择该频道
+THEN  watch 自动检测到 running 任务 → 恢复 activeSync 并启动轮询
+```
+
+#### S3 — Edge: 取消同步
+```
+GIVEN 同步正在运行
+WHEN  用户点击取消
+THEN  任务状态变为 cancelled，channel.last_sync 不更新
+      轮询停止，历史列表更新
+```
+
+#### S4 — Edge: 重复触发
+```
+GIVEN 同步已在运行
+WHEN  再次点击"开始同步"
+THEN  返回 409 Conflict（已有逻辑，不受影响）
+```
+
+### 场景→测试映射
+
+| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
+|---------|---------|-------------|------|
+| S1 | API 创建的 task_id 被 sync_channel 复用 | `test_sync_with_existing_task_id` | 集成 |
+| S2 | 不存在的 task_id 抛异常 | `test_sync_task_id_not_found` | 集成 |
+| — | total_files 在同步过程中更新 | `test_total_files_updates_during_sync` | 集成 |
+| — | channel 统计在同步完成后更新 | `test_sync_updates_channel_stats` | 集成 |
+| — | 前端 watch 检测 running 任务 | 手动验证 (Vue, 无自动化) | 手动 |
+
+### Bug 修复记录 (2026-06-02)
+
+#### Bug #1：触发同步后轮询立即停止（字段名不匹配）
+- **现象**: 触发同步后，进度标题显示"同步进行中"，但进度永不更新——需要刷新页面才能看到任务完成
+- **根因**: `trigger_sync` 返回 `{"task_id": ..., ...}`，前端 `pollActiveSync()` 检查 `activeSync.value?.id` 为 `undefined`，立即 `stopPolling()`
+- **修复**: `trigger_sync` 改用 `_sync_task_to_dict(task)` 统一序列化，字段名 `id` 与前端一致
+- **文件**: `api/sync.py` line 127-130
+
+#### Bug #2：同步异常时任务永远 stuck 在 pending
+- **现象**: 后台 `_bg_sync` 抛异常后，任务状态永远保持 `pending`，前端持续轮询无法结束
+- **根因**: `_bg_sync` 的 `except` 块只记日志，未更新任务状态
+- **修复**: 在 `except` 块中增加兜底逻辑——若任务仍为 `pending`，标记为 `failed`
+- **文件**: `api/sync.py` line 69-81
 
 #### S2 — Happy Path: 发现频道按钮正常加载
 ```

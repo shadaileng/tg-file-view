@@ -37,11 +37,14 @@ def _require_authorized():
 
 
 def _sync_task_to_dict(task: SyncTask) -> dict:
-    """Serialize a SyncTask to a JSON-safe dict."""
+    """Serialize a SyncTask to a JSON-safe dict, including phase/progress fields for
+    the frontend multi-phase progress panel."""
     return {
         "id": task.id,
         "channel_id": task.channel_id,
         "status": task.status,
+        "phase": task.phase,
+        "progress": task.progress,
         "total_files": task.total_files,
         "synced_files": task.synced_files,
         "skipped_files": task.skipped_files,
@@ -56,6 +59,8 @@ async def _bg_sync(channel_id: int, task_id: str):
     """Background coroutine that runs the actual sync.
 
     Creates its own database session for isolation from the HTTP request.
+    Passes task_id so sync_channel reuses the API-created task instead
+    of creating a new one (Bug #1 fix).
     """
     from database import AsyncSessionLocal
     from services.sync_engine import sync_channel
@@ -63,10 +68,23 @@ async def _bg_sync(channel_id: int, task_id: str):
     async with AsyncSessionLocal() as session:
         try:
             settings = Settings()
-            await sync_channel(channel_id, session, settings)
+            await sync_channel(channel_id, session, settings, task_id=task_id)
         except Exception as e:
             logger.error("Background sync failed: channel_id={} task_id={} error={}",
                          channel_id, task_id, e)
+            # F2: If task never transitioned away from "pending", mark as failed
+            # (otherwise it stays "pending" forever — the frontend keeps polling).
+            try:
+                async with AsyncSessionLocal() as s:
+                    t = await s.get(SyncTask, task_id)
+                    if t and t.status == "pending":
+                        t.status = "failed"
+                        t.completed_at = datetime.now(timezone.utc)
+                        t.errors = json.dumps([{"error": str(e)[:500]}])
+                        await s.commit()
+                        logger.info("Marked task {} as failed due to sync error", task_id)
+            except Exception as inner:
+                logger.error("Failed to mark task {} as failed: {}", task_id, inner)
         finally:
             _running_syncs.pop(task_id, None)
 
@@ -122,11 +140,9 @@ async def trigger_sync(channel_id: int, db: AsyncSession = Depends(get_db)):
     _running_syncs[task.id] = bg_task
 
     logger.info("Sync triggered: channel_id={} task_id={}", channel_id, task.id)
-    return {
-        "task_id": task.id,
-        "channel_id": channel_id,
-        "status": "running",
-    }
+    # F1: Use _sync_task_to_dict so the frontend receives "id" field
+    # (matching activeSync.id used by pollActiveSync), plus all progress fields.
+    return _sync_task_to_dict(task)
 
 
 # ---------------------------------------------------------------------------
