@@ -1,5 +1,33 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 文件管理查看/预览功能
+
+### 问题
+文件管理页面只有下载按钮，无法在浏览器中直接预览文件（图片、视频、音频等），每次需要下载到本地再打开，流程低效。
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/files.py` | 新增 `GET /api/files/{file_id}/view` 端点：已缓存走磁盘 `_file_stream` inline 返回，未缓存走 `_stream_from_telegram()` 通过 `iter_download` 直通代理（不落盘）；新增 `_stream_from_telegram` 异步生成器 |
+| `frontend/src/api/index.js` | `filesApi` 新增 `view(id)` 方法，`responseType: 'blob'` |
+| `frontend/src/views/FilesView.vue` | 卡片操作区新增"查看"按钮；新增 `preview` reactive 状态和 `handleView`/`closePreview` 函数；新增 `<Teleport>` 预览弹窗，支持 image/video/audio 渲染和不支持格式降级展示 |
+| `tests/test_files_api.py` | 新增 5 条场景测试：S15 已缓存图片 inline、S16 已缓存视频 inline、S17 未缓存从 TG 流式代理、S18 文件不存在 404、S19 未缓存未授权 400 |
+
+### 预览策略
+
+| mime_type 前缀 | 渲染 | 备注 |
+|:---|------|------|
+| `image/*`, `application/pdf` | `<img>` | 直接展示 |
+| `video/*` | `<video controls>` | HTML5 播放器 |
+| `audio/*` | `<audio controls>` | HTML5 播放器 |
+| 其他 | 详情卡片 + 下载按钮 | 不支持浏览器内预览的文件类型 |
+
+### 核心设计
+未缓存文件不落盘：`FastAPI StreamingResponse ← Telethon iter_download ← Telegram`，前端用 `URL.createObjectURL(blob)` 渲染。
+
+---
+
 ## feat: 同步进度分阶段可视化 & 详细信息展示
 
 ### 问题

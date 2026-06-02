@@ -4,7 +4,74 @@
 
 ---
 
-## Current Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
+## Current Phase: feat/file-preview — 文件管理查看/预览功能 ✅
+
+**分支**: `feat/file-preview`
+
+### 需求背景
+文件管理页面只能下载，无法在浏览器中直接预览。新增"查看"按钮和预览弹窗。
+
+### 变更范围矩阵
+
+| 变更点 | 影响模块 | 破坏性变更 |
+|--------|---------|:---:|
+| 新增 `GET /api/files/{file_id}/view`（inline 流式，已缓存走磁盘、未缓存走 iter_download 代理） | `api/files.py` | 否 |
+| 新增 `filesApi.view(id)` 客户端方法 | `frontend/src/api/index.js` | 否 |
+| 卡片新增"查看"按钮 + 预览弹窗（image/video/audio/不支持降级） | `frontend/src/views/FilesView.vue` | 否 |
+| 新增 5 条场景测试 (S15-S19) | `tests/test_files_api.py` | 否 |
+
+### 预览策略
+
+| mime_type 前缀 | 渲染方式 |
+|:---|------|
+| `image/*`, `application/pdf` | `<img>` 标签 |
+| `video/*` | `<video controls>` 播放器 |
+| `audio/*` | `<audio controls>` 播放器 |
+| 其他 | 文件详情卡片 + 下载按钮 |
+
+### 核心设计：直通 TG 流式代理
+未缓存文件不走磁盘：`FastAPI StreamingResponse ← iter_download() ← Telegram`，浏览器拿到 blob 后通过 `URL.createObjectURL` 渲染。
+
+### 场景设计
+
+#### S1 — Happy Path: 查看已缓存图片/视频
+```
+GIVEN 某频道有已缓存的图片/视频
+WHEN  用户点击"查看"按钮
+THEN  弹出预览弹窗，正确渲染图片/视频，底部显示文件名、大小、类型
+```
+
+#### S2 — Happy Path: 未缓存文件从 TG 直通预览
+```
+GIVEN 文件未缓存，Telegram 已授权
+WHEN  用户点击"查看"
+THEN  弹窗显示 loading，数据通过 iter_download 从 TG 流式传输到浏览器展示
+```
+
+#### S3 — Edge: 文件类型不支持预览
+```
+GIVEN 文件 mime_type 非 image/video/audio（如 zip、docx）
+WHEN  用户点击"查看"
+THEN  弹窗显示文件详情（名称、类型、大小）+ "下载文件"按钮
+```
+
+#### S4 — Edge: 未缓存且未授权
+```
+GIVEN 文件未缓存，Telegram 未授权
+WHEN  用户点击"查看"
+THEN  弹窗显示"加载失败"错误提示
+```
+
+#### S5 — Edge: 文件不存在
+```
+GIVEN file_id 不存在
+WHEN  请求 GET /api/files/{file_id}/view
+THEN  返回 404
+```
+
+---
+
+## Previous Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
 
 **分支**: `feat/sync-phase-progress`
 

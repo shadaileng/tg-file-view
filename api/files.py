@@ -1,4 +1,4 @@
-"""File management API routes: list, detail, download, cache."""
+"""File management API routes: list, detail, download, view, cache."""
 
 import os
 import re
@@ -289,7 +289,96 @@ async def cache_file(file_id: int, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Route 5: DELETE /api/files/{file_id}/cache
+# Route 5: GET /api/files/{file_id}/view
+# ---------------------------------------------------------------------------
+async def _stream_from_telegram(
+    svc, tg_id: int, message_id: int, chunk_size: int = 64 * 1024
+) -> AsyncGenerator[bytes, None]:
+    """Stream file chunks directly from Telegram via iter_download — no disk writes.
+
+    Yields bytes chunks until the full file is consumed.
+    """
+    client = await svc.get_client()
+    try:
+        entity = await client.get_entity(tg_id)
+    except ValueError as e:
+        logger.warning("Channel entity not found for tg_id={}: {}", tg_id, e)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Channel (tg_id={tg_id}) not found on Telegram",
+        )
+
+    try:
+        message = await client.get_messages(entity, ids=message_id)
+    except Exception as e:
+        logger.error("Failed to get message tg_id={} msg_id={}: {}", tg_id, message_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch message from Telegram: {e}",
+        )
+
+    if message is None or message.media is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Message id={message_id} not found or has no media",
+        )
+
+    try:
+        async for chunk in client.iter_download(message.media, request_size=chunk_size):
+            yield chunk
+    except Exception as e:
+        logger.error("Failed to stream from Telegram: {}", e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to stream file from Telegram: {e}",
+        )
+
+
+@router.get("/api/files/{file_id}/view")
+async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
+    """Stream a file for inline preview in browser.
+
+    - If cached on disk: stream from local cache (Content-Disposition: inline).
+    - If not cached: stream directly from Telegram via iter_download — no
+      disk write, no caching.  Content-Disposition: inline.
+
+    Unlike /download (which forces attachment), this endpoint allows the
+    browser to render the file inline (image, video, audio, PDF, etc.).
+    """
+    file_ = await db.get(FileModel, file_id)
+    if file_ is None:
+        raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
+
+    # Check if cached on disk — stream from local cache
+    if file_.is_cached and file_.cache_path:
+        full_path = CACHE_DIR / file_.cache_path
+        if full_path.exists():
+            return StreamingResponse(
+                _file_stream(full_path),
+                media_type=file_.mime_type,
+                headers={
+                    "Content-Disposition": f'inline; filename="{file_.file_name}"',
+                    "Content-Length": str(file_.file_size),
+                },
+            )
+
+    # Not cached — stream directly from Telegram via iter_download
+    svc = _require_authorized()
+    channel = await db.get(ChannelModel, file_.channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Channel not found in database")
+
+    return StreamingResponse(
+        _stream_from_telegram(svc, channel.tg_id, file_.message_id),
+        media_type=file_.mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{file_.file_name}"',
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Route 6: DELETE /api/files/{file_id}/cache
 # ---------------------------------------------------------------------------
 @router.delete("/api/files/{file_id}/cache")
 async def delete_cache(file_id: int, db: AsyncSession = Depends(get_db)):

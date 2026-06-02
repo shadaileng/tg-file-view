@@ -345,3 +345,150 @@ async def test_download_unauthorized(db_session):
     with pytest.raises(HTTPException) as exc:
         await download_file(file_id=f.id, db=db_session)
     assert exc.value.status_code == 400
+
+
+# ===================================================================
+# View endpoint tests (S15–S19)
+# ===================================================================
+
+from api.files import view_file, _stream_from_telegram
+
+
+# ---------------------------------------------------------------------------
+# S15 — Happy Path: 查看已缓存图片（inline 流式）
+# ---------------------------------------------------------------------------
+async def test_view_cached_image(db_session):
+    """GIVEN cached image file WHEN GET /view THEN 200 inline with correct mime."""
+    ch = await _create_channel(db_session)
+    cache_rel = f"{ch.id}/555_view_image.jpg"
+    cache_full = CACHE_DIR / cache_rel
+    cache_full.parent.mkdir(parents=True, exist_ok=True)
+    content = b"\xff\xd8\xff\xe0" + b"x" * 500  # fake JPEG header + body
+    cache_full.write_bytes(content)
+
+    f = await _create_file(
+        db_session, ch.id,
+        file_name="view_image.jpg",
+        mime_type="image/jpeg",
+        file_size=len(content),
+        is_cached=True,
+        cache_path=cache_rel,
+    )
+
+    response = await view_file(file_id=f.id, db=db_session)
+
+    assert response.status_code == 200
+    assert response.media_type == "image/jpeg"
+    # Verify inline disposition
+    cd = response.headers.get("content-disposition", "")
+    assert "inline" in cd
+
+    # Read chunks and verify
+    chunks = b""
+    async for chunk in response.body_iterator:
+        chunks += chunk if isinstance(chunk, bytes) else chunk.encode()
+    assert chunks == content
+
+    if cache_full.exists():
+        os.remove(str(cache_full))
+
+
+# ---------------------------------------------------------------------------
+# S16 — Happy Path: 查看已缓存视频（inline 流式）
+# ---------------------------------------------------------------------------
+async def test_view_cached_video(db_session):
+    """GIVEN cached video file WHEN GET /view THEN 200 inline video/mp4."""
+    ch = await _create_channel(db_session)
+    cache_rel = f"{ch.id}/666_view_video.mp4"
+    cache_full = CACHE_DIR / cache_rel
+    cache_full.parent.mkdir(parents=True, exist_ok=True)
+    content = b"\x00\x00\x00\x18ftypmp42" + b"x" * 1000  # fake MP4
+    cache_full.write_bytes(content)
+
+    f = await _create_file(
+        db_session, ch.id,
+        file_name="view_video.mp4",
+        mime_type="video/mp4",
+        file_size=len(content),
+        is_cached=True,
+        cache_path=cache_rel,
+    )
+
+    response = await view_file(file_id=f.id, db=db_session)
+
+    assert response.status_code == 200
+    assert response.media_type == "video/mp4"
+    assert "inline" in response.headers.get("content-disposition", "")
+
+    if cache_full.exists():
+        os.remove(str(cache_full))
+
+
+# ---------------------------------------------------------------------------
+# S17 — Edge: 未缓存文件从 TG 流式代理
+# ---------------------------------------------------------------------------
+async def test_view_uncached_streams_from_telegram(db_session):
+    """GIVEN file not cached,Telegram authorized
+    WHEN GET /view THEN streams via iter_download from TG."""
+    ch = await _create_channel(db_session, tg_id=123456789)
+    f = await _create_file(
+        db_session, ch.id,
+        file_name="remote.txt",
+        mime_type="text/plain",
+        is_cached=False,
+        cache_path=None,
+    )
+
+    # Mock client with iter_download
+    client_mock = AsyncMock()
+    client_mock.get_entity = AsyncMock(return_value="fake_entity")
+    client_mock.get_messages = AsyncMock()
+    client_mock.get_messages.return_value.media = "fake_media"
+
+    # async generator for iter_download
+    async def _fake_iter(m, request_size=64 * 1024):
+        for chunk in [b"chunk1", b"chunk2", b"chunk3"]:
+            yield chunk
+
+    client_mock.iter_download = _fake_iter
+
+    svc = await _mock_authorized_service(client_mock)
+
+    response = await view_file(file_id=f.id, db=db_session)
+
+    assert response.status_code == 200
+    assert response.media_type == "text/plain"
+    assert "inline" in response.headers.get("content-disposition", "")
+
+    chunks = b""
+    async for chunk in response.body_iterator:
+        chunks += chunk if isinstance(chunk, bytes) else chunk.encode()
+    assert chunks == b"chunk1chunk2chunk3"
+
+
+# ---------------------------------------------------------------------------
+# S18 — Edge: 查看不存在的文件
+# ---------------------------------------------------------------------------
+async def test_view_file_not_found(db_session):
+    """GIVEN file 999 doesn't exist WHEN GET /view THEN 404."""
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await view_file(file_id=999, db=db_session)
+    assert exc.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# S19 — Edge: 未缓存且未授权时查看
+# ---------------------------------------------------------------------------
+async def test_view_uncached_unauthorized(db_session):
+    """GIVEN file not cached,Telegram not authorized WHEN GET /view THEN 400."""
+    ch = await _create_channel(db_session)
+    f = await _create_file(db_session, ch.id, is_cached=False, cache_path=None)
+
+    reset_telegram_service()
+
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        await view_file(file_id=f.id, db=db_session)
+    assert exc.value.status_code == 400
