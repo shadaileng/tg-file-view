@@ -120,12 +120,12 @@ class TestTriggerSync:
         response = await client.post(f"/api/channels/{ch.id}/sync")
         assert response.status_code == 202
         data = response.json()
-        assert "task_id" in data
+        assert "id" in data
         assert data["channel_id"] == ch.id
 
         # Wait for background sync to complete (avoids DB lock on teardown)
         from api.sync import _running_syncs
-        bg_task = _running_syncs.get(data["task_id"])
+        bg_task = _running_syncs.get(data["id"])
         if bg_task:
             try:
                 await asyncio.wait_for(bg_task, timeout=5.0)

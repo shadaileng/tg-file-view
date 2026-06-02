@@ -60,6 +60,20 @@ THEN  返回 409 Conflict（已有逻辑，不受影响）
 | — | channel 统计在同步完成后更新 | `test_sync_updates_channel_stats` | 集成 |
 | — | 前端 watch 检测 running 任务 | 手动验证 (Vue, 无自动化) | 手动 |
 
+### Bug 修复记录 (2026-06-02)
+
+#### Bug #1：触发同步后轮询立即停止（字段名不匹配）
+- **现象**: 触发同步后，进度标题显示"同步进行中"，但进度永不更新——需要刷新页面才能看到任务完成
+- **根因**: `trigger_sync` 返回 `{"task_id": ..., ...}`，前端 `pollActiveSync()` 检查 `activeSync.value?.id` 为 `undefined`，立即 `stopPolling()`
+- **修复**: `trigger_sync` 改用 `_sync_task_to_dict(task)` 统一序列化，字段名 `id` 与前端一致
+- **文件**: `api/sync.py` line 127-130
+
+#### Bug #2：同步异常时任务永远 stuck 在 pending
+- **现象**: 后台 `_bg_sync` 抛异常后，任务状态永远保持 `pending`，前端持续轮询无法结束
+- **根因**: `_bg_sync` 的 `except` 块只记日志，未更新任务状态
+- **修复**: 在 `except` 块中增加兜底逻辑——若任务仍为 `pending`，标记为 `failed`
+- **文件**: `api/sync.py` line 69-81
+
 #### S2 — Happy Path: 发现频道按钮正常加载
 ```
 GIVEN Telegram 已授权，用户有已订阅频道

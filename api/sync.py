@@ -69,6 +69,19 @@ async def _bg_sync(channel_id: int, task_id: str):
         except Exception as e:
             logger.error("Background sync failed: channel_id={} task_id={} error={}",
                          channel_id, task_id, e)
+            # F2: If task never transitioned away from "pending", mark as failed
+            # (otherwise it stays "pending" forever — the frontend keeps polling).
+            try:
+                async with AsyncSessionLocal() as s:
+                    t = await s.get(SyncTask, task_id)
+                    if t and t.status == "pending":
+                        t.status = "failed"
+                        t.completed_at = datetime.now(timezone.utc)
+                        t.errors = json.dumps([{"error": str(e)[:500]}])
+                        await s.commit()
+                        logger.info("Marked task {} as failed due to sync error", task_id)
+            except Exception as inner:
+                logger.error("Failed to mark task {} as failed: {}", task_id, inner)
         finally:
             _running_syncs.pop(task_id, None)
 
@@ -124,11 +137,9 @@ async def trigger_sync(channel_id: int, db: AsyncSession = Depends(get_db)):
     _running_syncs[task.id] = bg_task
 
     logger.info("Sync triggered: channel_id={} task_id={}", channel_id, task.id)
-    return {
-        "task_id": task.id,
-        "channel_id": channel_id,
-        "status": "running",
-    }
+    # F1: Use _sync_task_to_dict so the frontend receives "id" field
+    # (matching activeSync.id used by pollActiveSync), plus all progress fields.
+    return _sync_task_to_dict(task)
 
 
 # ---------------------------------------------------------------------------
