@@ -588,13 +588,13 @@ async def test_mark_accessed(db_session):
         accessed_at=old_time,
     )
 
-    # SQLite DateTime stores without timezone; strip tz for comparison
-    old_time_naive = old_time.replace(tzinfo=None)
-
     await CacheManager.mark_accessed(db_session, f)
 
     await db_session.refresh(f)
-    assert f.accessed_at > old_time_naive
+    # SQLite + DateTime(timezone=True) still returns naive datetimes on
+    # read-back; the stored value IS UTC, so restore tzinfo for comparison.
+    assert f.accessed_at is not None
+    assert f.accessed_at.replace(tzinfo=timezone.utc) > old_time
 
 
 # ---------------------------------------------------------------------------

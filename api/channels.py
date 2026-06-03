@@ -6,6 +6,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.utils import utc_iso
 from database import get_db
 from models import Channel
 from services.telegram_client import get_telegram_service, AuthState
@@ -53,7 +54,7 @@ def _channel_to_dict(channel: Channel) -> dict:
         "title": channel.title,
         "file_count": channel.file_count,
         "total_size": channel.total_size,
-        "last_sync": channel.last_sync.isoformat() if channel.last_sync else None,
+        "last_sync": utc_iso(channel.last_sync),
     }
 
 

@@ -10,6 +10,7 @@ from loguru import logger
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.utils import utc_iso
 from database import get_db
 from models import Channel, SyncTask, File as FileModel, ThumbJob
 from config import Settings
@@ -50,9 +51,9 @@ def _sync_task_to_dict(task: SyncTask) -> dict:
         "synced_files": task.synced_files,
         "skipped_files": task.skipped_files,
         "errors": json.loads(task.errors) if task.errors else [],
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "started_at": utc_iso(task.started_at),
+        "completed_at": utc_iso(task.completed_at),
+        "created_at": utc_iso(task.created_at),
     }
 
 

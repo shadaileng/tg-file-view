@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
+from api.utils import utc_iso
 from dotenv import load_dotenv
 from loguru import logger
 from pydantic import Field
@@ -257,7 +258,7 @@ async def list_all_configs(db_session) -> list[dict]:
             "key": key,
             "value": row.value if row else "",
             "editable": key not in READONLY_CONFIG_KEYS,
-            "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+            "updated_at": utc_iso(row.updated_at) if row else None,
         })
     return output
 

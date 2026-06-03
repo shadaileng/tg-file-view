@@ -30,7 +30,7 @@ class Channel(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     file_count: Mapped[int] = mapped_column(default=0)
     total_size: Mapped[int] = mapped_column(BigInteger, default=0)
-    last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     files = relationship("File", back_populates="channel", cascade="all, delete-orphan")
 
@@ -52,10 +52,10 @@ class File(Base):
     thumb_type: Mapped[str] = mapped_column(String(20), default="auto")  # auto, manual
     cache_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     is_cached: Mapped[bool] = mapped_column(default=False)
-    cached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # when file was first cached
-    accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last access for LRU eviction
+    cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # when file was first cached
+    accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # last access for LRU eviction
     tg_ref: Mapped[str | None] = mapped_column(Text, nullable=True)  # telethon file reference
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     channel = relationship("Channel", back_populates="files")
 
@@ -83,9 +83,9 @@ class SyncTask(Base):
         Integer, default=0
     )  # 0-100
     errors: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ThumbJob(Base):
@@ -104,9 +104,9 @@ class ThumbJob(Base):
     attempt: Mapped[int] = mapped_column(default=0)
     max_retries: Mapped[int] = mapped_column(default=3)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AppConfig(Base):
@@ -116,5 +116,5 @@ class AppConfig(Base):
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

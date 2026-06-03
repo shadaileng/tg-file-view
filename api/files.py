@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy import select, func, desc as sa_desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.utils import utc_iso
 from database import get_db
 from models import Channel as ChannelModel, File as FileModel
 from services.telegram_client import get_telegram_service, AuthState
@@ -60,10 +61,10 @@ def _file_to_dict(file_: FileModel) -> dict:
         "thumb_type": file_.thumb_type,
         "cache_path": file_.cache_path,
         "is_cached": file_.is_cached,
-        "cached_at": file_.cached_at.isoformat() if file_.cached_at else None,
-        "accessed_at": file_.accessed_at.isoformat() if file_.accessed_at else None,
+        "cached_at": utc_iso(file_.cached_at),
+        "accessed_at": utc_iso(file_.accessed_at),
         "tg_ref": file_.tg_ref,
-        "created_at": file_.created_at.isoformat() if file_.created_at else None,
+        "created_at": utc_iso(file_.created_at),
     }
 
 
