@@ -1,5 +1,46 @@
 # 开发日志 (CHANGELOG)
 
+## fix: 全链路 UTC 时间戳规范化 — 修复前端 8 小时时差
+
+### 问题
+SQLite + `DateTime(timezone=True)` 读回时丢失时区信息，导致：
+1. 裸调 `.isoformat()` 产生无时区字符串（如 `"2026-06-03T06:10:20"`）
+2. 前端 `new Date()` 将其解析为本地时间，产生 8 小时偏差
+3. 多处 API 序列化代码各自复制相同的 `x.isoformat() if x else None` 模式
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/utils.py` | 新建共享 `utc_iso()` 函数——检测 `tzinfo is None` 时自动补 `+00:00`，确保前端正确解析 |
+| `models.py` | 所有 11 处 `DateTime` → `DateTime(timezone=True)`（channels.last_sync, File 3 列, SyncTask 3 列, ThumbJob 3 列, AppConfig.updated_at） |
+| `api/channels.py` | `.isoformat()` → `utc_iso()` (1 处) |
+| `api/sync.py` | `.isoformat()` → `utc_iso()` (3 处) |
+| `api/files.py` | `.isoformat()` → `utc_iso()` (3 处) |
+| `api/thumbnails.py` | 删除本地 `_iso()` helper，改用 `utc_iso` (3 处) |
+| `config.py` | `.isoformat()` → `utc_iso()` (1 处) |
+| `tests/test_cache_manager.py` | 移除 naive datetime workaround，改用 `replace(tzinfo=timezone.utc)` |
+
+### 效果验证
+
+```
+修复前 .isoformat():  "2026-06-03T06:10:20"       → 前端解析为本地时间 06:10
+修复后 utc_iso():     "2026-06-03T06:10:20+00:00" → 前端正确识别 UTC ✅
+```
+
+### 代码风格原则（已落地到 AGENT.md §5.7）
+
+> **UTC 时间戳三原则**
+>
+> 1. **存储**：所有 `DateTime` 列必须 `timezone=True`，`default` 用 `lambda: datetime.now(timezone.utc)`
+> 2. **序列化**：API 输出的 datetime 字符串**一律经过 `utc_iso()`**，禁止裸调 `.isoformat()`
+> 3. **写入**：所有手动赋值 datetime 的地方用 `datetime.now(timezone.utc)`，禁止 `datetime.utcnow()`
+
+### 测试
+- 全量回归: **205/205 PASS** ✅
+
+---
+
 ## feat: 同步完成后自动生成缩略图/视频封面
 
 ### 问题

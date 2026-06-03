@@ -547,6 +547,14 @@ Tests: 65/65 PASS
 - **异常处理**：API 层捕获并转为 HTTPException
 - **无 emoji**：代码中不使用 emoji（测试/文档除外）
 - **配置统一来源**：`main.py` 中所有配置读取**必须**通过 `settings` 对象，禁止使用 `os.environ.get()`。`database.py` 中的模块级 `os.environ.get()` 是合理的（导入时执行），但需要确保 `config.py`（含 `load_dotenv()`）在其之前导入。
+- **UTC 时间戳规范**（三原则）：
+  1. **存储层**：所有 `DateTime` 列必须 `DateTime(timezone=True)`，`default` 用 `lambda: datetime.now(timezone.utc)`，禁止 `datetime.utcnow()`
+  2. **序列化层**：API 输出的 datetime 字符串**一律经过 `api/utils.py::utc_iso()`**，禁止裸调 `.isoformat()`
+  3. **写入层**：所有手动赋值 datetime 的地方用 `datetime.now(timezone.utc)`，禁止 `datetime.utcnow()`
+
+  为什么：
+  - SQLite + SQLAlchemy 即使设置 `timezone=True`，读回时仍可能丢失 tzinfo → 裸 `.isoformat()` 产生无时区字符串（如 `"2026-06-03T06:10:20"`） → 前端 `new Date()` 解析为本地时间 → 8 小时时差
+  - `utc_iso()` 兜底检测：`tzinfo is None` 时自动补 `+00:00` 后缀，确保前端正确解析
 
 ### 5.8 反模式（禁止）
 
