@@ -9,7 +9,7 @@ Endpoints:
 - POST /api/thumbnails/jobs/{job_id}/cancel → cancel a job
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -143,7 +143,7 @@ async def trigger_single_thumbnail(
         mime_type=file_record.mime_type,
         status="pending",
         priority=_get_priority(file_record.file_type),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(job)
     await db.commit()
@@ -212,7 +212,7 @@ async def generate_batch(
             mime_type=file_record.mime_type,
             status="pending",
             priority=_get_priority(file_record.file_type),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         db.add(job)
         await db.flush()  # get the id before commit
@@ -345,7 +345,7 @@ async def cancel_thumb_job(
         )
 
     job.status = "cancelled"
-    job.completed_at = datetime.utcnow()
+    job.completed_at = datetime.now(timezone.utc)
     await db.commit()
 
     logger.info("Cancelled thumbnail job {}", job_id)

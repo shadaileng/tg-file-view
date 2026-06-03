@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for tg_file_viewer."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column,
@@ -55,7 +55,7 @@ class File(Base):
     cached_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # when file was first cached
     accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last access for LRU eviction
     tg_ref: Mapped[str | None] = mapped_column(Text, nullable=True)  # telethon file reference
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     channel = relationship("Channel", back_populates="files")
 
@@ -85,7 +85,7 @@ class SyncTask(Base):
     errors: Mapped[str] = mapped_column(Text, default="[]")  # JSON array
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ThumbJob(Base):
@@ -104,7 +104,7 @@ class ThumbJob(Base):
     attempt: Mapped[int] = mapped_column(default=0)
     max_retries: Mapped[int] = mapped_column(default=3)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -116,5 +116,5 @@ class AppConfig(Base):
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )

@@ -23,11 +23,12 @@ RUN pnpm build
 FROM python:3.11-slim
 WORKDIR /app
 
-# System libs required by Pillow (image decoding)
+# System libs required by Pillow (image decoding) + ffmpeg (video cover)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo \
     libpng16-16 \
     libwebp7 \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (fast Python package manager)

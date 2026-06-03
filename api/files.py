@@ -2,7 +2,7 @@
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator
 from urllib.parse import quote
@@ -184,7 +184,7 @@ async def _ensure_cached(
     )
 
     # Update DB record with cache info and timestamps
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     file_.cache_path = relative_path
     file_.is_cached = True
     file_.file_size = size
