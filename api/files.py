@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -29,6 +30,20 @@ _SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]")
 def _safe_filename(name: str) -> str:
     """Sanitize filename, replacing unsafe characters."""
     return _SAFE_NAME_PATTERN.sub("_", name)
+
+
+def _make_content_disposition(filename: str, disposition: str = "inline") -> str:
+    """Build a safe Content-Disposition header value.
+
+    Uses RFC 5987 encoding (filename*=UTF-8'') for non-ASCII filenames
+    to avoid UnicodeEncodeError when Starlette encodes headers as latin-1.
+    """
+    try:
+        filename.encode("latin-1")
+        return f'{disposition}; filename="{filename}"'
+    except UnicodeEncodeError:
+        encoded = quote(filename, safe="")
+        return f"{disposition}; filename*=UTF-8''{encoded}"
 
 
 def _file_to_dict(file_: FileModel) -> dict:
@@ -255,7 +270,7 @@ async def download_file(file_id: int, db: AsyncSession = Depends(get_db)):
         _file_stream(full_path),
         media_type=file_.mime_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_.file_name}"',
+            "Content-Disposition": _make_content_disposition(file_.file_name, "attachment"),
             "Content-Length": str(file_.file_size),
         },
     )
@@ -292,39 +307,17 @@ async def cache_file(file_id: int, db: AsyncSession = Depends(get_db)):
 # Route 5: GET /api/files/{file_id}/view
 # ---------------------------------------------------------------------------
 async def _stream_from_telegram(
-    svc, tg_id: int, message_id: int, chunk_size: int = 64 * 1024
+    svc, media, chunk_size: int = 64 * 1024
 ) -> AsyncGenerator[bytes, None]:
     """Stream file chunks directly from Telegram via iter_download — no disk writes.
 
-    Yields bytes chunks until the full file is consumed.
+    Pre-condition: the caller must have already fetched and validated
+    the media object from Telegram.  This function only does the
+    chunk-by-chunk streaming.
     """
     client = await svc.get_client()
     try:
-        entity = await client.get_entity(tg_id)
-    except ValueError as e:
-        logger.warning("Channel entity not found for tg_id={}: {}", tg_id, e)
-        raise HTTPException(
-            status_code=404,
-            detail=f"Channel (tg_id={tg_id}) not found on Telegram",
-        )
-
-    try:
-        message = await client.get_messages(entity, ids=message_id)
-    except Exception as e:
-        logger.error("Failed to get message tg_id={} msg_id={}: {}", tg_id, message_id, e)
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to fetch message from Telegram: {e}",
-        )
-
-    if message is None or message.media is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Message id={message_id} not found or has no media",
-        )
-
-    try:
-        async for chunk in client.iter_download(message.media, request_size=chunk_size):
+        async for chunk in client.iter_download(media, request_size=chunk_size):
             yield chunk
     except Exception as e:
         logger.error("Failed to stream from Telegram: {}", e)
@@ -357,23 +350,55 @@ async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
                 _file_stream(full_path),
                 media_type=file_.mime_type,
                 headers={
-                    "Content-Disposition": f'inline; filename="{file_.file_name}"',
+                    "Content-Disposition": _make_content_disposition(file_.file_name, "inline"),
                     "Content-Length": str(file_.file_size),
                 },
             )
 
-    # Not cached — stream directly from Telegram via iter_download
+    # Not cached — validate Telegram connectivity BEFORE returning StreamingResponse
     svc = _require_authorized()
     channel = await db.get(ChannelModel, file_.channel_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Channel not found in database")
 
+    # Pre-fetch and validate media from Telegram (raises HTTPException on failure)
+    client = await svc.get_client()
+    try:
+        entity = await client.get_entity(channel.tg_id)
+    except ValueError as e:
+        logger.warning("Channel entity not found for tg_id={}: {}", channel.tg_id, e)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Channel (tg_id={channel.tg_id}) not found on Telegram",
+        )
+
+    try:
+        message = await client.get_messages(entity, ids=file_.message_id)
+    except Exception as e:
+        logger.error("Failed to get message tg_id={} msg_id={}: {}", channel.tg_id, file_.message_id, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch message from Telegram: {e}",
+        )
+
+    if message is None or message.media is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Message id={file_.message_id} not found or has no media",
+        )
+
+    # All pre-checks passed — stream the media chunks
+    headers = {
+        "Content-Disposition": _make_content_disposition(file_.file_name, "inline"),
+    }
+    # Set Content-Length if known (helps browser show progress and detect truncated streams)
+    if file_.file_size > 0:
+        headers["Content-Length"] = str(file_.file_size)
+
     return StreamingResponse(
-        _stream_from_telegram(svc, channel.tg_id, file_.message_id),
+        _stream_from_telegram(svc, message.media),
         media_type=file_.mime_type,
-        headers={
-            "Content-Disposition": f'inline; filename="{file_.file_name}"',
-        },
+        headers=headers,
     )
 
 

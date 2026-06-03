@@ -439,8 +439,9 @@ async function handleView(file) {
     }
     preview.url = URL.createObjectURL(blob)
     preview.loading = false
-  } catch {
-    preview.error = '加载失败，请检查网络或 Telegram 连接'
+  } catch (err) {
+    const detail = err?.response?.data?.detail || err?.message || '未知错误'
+    preview.error = `加载失败：${detail}`
     preview.loading = false
   }
 }

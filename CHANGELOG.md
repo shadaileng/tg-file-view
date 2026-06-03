@@ -1,5 +1,46 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 网络诊断工具 — 全链路分段定位预览加载慢的瓶颈
+
+### 问题
+未缓存文件预览走 `iter_download` 直通 Telegram，网络链路上的每一环（V2Ray SOCKS5 → Shadowsocks → Telegram DC）都可能造成加载慢，但缺少工具定位具体瓶颈。
+
+### 修复
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `scripts/diag_tg_network.py` | 新增 | 7 阶段网络诊断工具 |
+
+### 7 阶段诊断
+
+| Stage | 测试内容 | 诊断目标 |
+|-------|---------|---------|
+| 1 | SOCKS5 TCP 连接 + 握手 | V2Ray 端口是否正常 |
+| 2 | 代理出口 HTTP 往返 (httpbin) | 代理出口公网延迟 |
+| 3 | Telegram DC DNS 解析 | DNS 分辨率 |
+| 4 | 各 DC (5+5) TCP 连接延迟 | 最优 DC 选择 |
+| 5 | Telethon connect + MTProto Ping(×5) | 协议层 RTT |
+| 6 | iter_download 块延迟 P50/P90/P99 + TTFB | 下载吞吐量瓶颈 |
+| 7 | get_entity/get_messages 延迟 | API 调用 RTT |
+
+### 慢速原因映射
+- Stage 1 TCP >30ms → V2Ray 本地监听异常
+- Stage 2 HTTP >500ms → 代理出口带宽/延迟差
+- Stage 5 Ping >500ms → 跨国代理延迟高
+- Stage 6 P90 块间隔 >500ms → 代理出口不稳定或带宽低
+- Stage 7 get_entity >2s → 多轮 MTProto 往返（正常）
+
+### 优化方向
+- 换用亚洲节点代理（新加坡 DC5 延迟可能更低）
+- 升级到 VLESS+XTLS 协议
+- 增加本地缓存命中率（减小 iter_download 依赖）
+- 使用 MTProto Proxy 直连
+
+### 测试
+- 工具为独立诊断脚本，不改变应用逻辑，不影响现有测试
+
+---
+
 ## feat: 文件管理查看/预览功能
 
 ### 问题
