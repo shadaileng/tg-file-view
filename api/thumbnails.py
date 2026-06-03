@@ -44,6 +44,8 @@ class ThumbJobOut(BaseModel):
     file_name: str
     mime_type: str
     status: str
+    phase: str
+    progress: int
     priority: int
     strategy: Optional[str] = None
     attempt: int
@@ -71,6 +73,8 @@ def _job_to_dict(job: ThumbJob, thumb_path: str | None = None) -> ThumbJobOut:
         file_name=job.file_name,
         mime_type=job.mime_type,
         status=job.status,
+        phase=getattr(job, "phase", "pending"),
+        progress=getattr(job, "progress", 0),
         priority=job.priority,
         strategy=job.strategy,
         attempt=job.attempt,
@@ -343,6 +347,7 @@ async def cancel_thumb_job(
         )
 
     job.status = "cancelled"
+    job.phase = "cancelled"
     job.completed_at = datetime.now(timezone.utc)
     await db.commit()
 

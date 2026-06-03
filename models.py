@@ -99,6 +99,10 @@ class ThumbJob(Base):
     status: Mapped[str] = mapped_column(
         String(20), default="pending"
     )  # pending, processing, completed, failed, cancelled
+    phase: Mapped[str] = mapped_column(
+        String(30), default="pending"
+    )  # pending / downloading / generating / completed / failed / cancelled
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
     priority: Mapped[int] = mapped_column(default=5)  # 1-10, 1 highest
     strategy: Mapped[str | None] = mapped_column(String(50), nullable=True)
     attempt: Mapped[int] = mapped_column(default=0)

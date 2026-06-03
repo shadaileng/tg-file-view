@@ -1,5 +1,29 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 缩略图管理 4 大问题修复 — 自动刷新 / 阶段进度 / TG缩略图 / 取消修复
+
+### 问题
+1. 缩略图管理页面无自动更新，用户需要手动刷新
+2. 处理中的任务不显示阶段（下载中/生成中），无法得知进度
+3. 视频封面需要完整下载视频 + ffmpeg 提取，极慢（分钟级）
+4. 处理中取消后 Worker 不感知，用 `completed` 覆盖 `cancelled`
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `models.py` | `ThumbJob` 新增 `phase`（阶段标记）和 `progress`（0-100）字段 |
+| `api/thumbnails.py` | `ThumbJobOut` 新增 `phase` + `progress`；`cancel_thumb_job` 同步设 `phase="cancelled"` |
+| `services/task_queue.py` | 重构：`_process_job` 拆为 `_process_video_via_tg_thumb` + `_process_image_thumb` + `_process_video_ffmpeg_fallback`；新增 `_download_telegram_thumb()` 直接下载 TG 预生成缩略图（~10KB）；每次长时间操作后 `session.refresh(job)` 检查取消状态 |
+| `ThumbnailsView.vue` | 新增 2s 轮询、阶段进度条、自动刷新指示器、`phase/progress` 展示 |
+
+### 性能对比
+
+| 场景 | 修复前 | 修复后 |
+|------|-------|-------|
+| 视频封面 | 下载完整 mp4（数百MB）+ ffmpeg → 1~5 分钟 | TG 缩略图直接下载（~10KB）→ <1s |
+| 取消响应 | Worker 完成后覆盖为 `completed` | 3 个 checkpoint 检查，不会覆盖 |
+
 ## fix: 全链路 UTC 时间戳规范化 — 修复前端 8 小时时差
 
 ### 问题

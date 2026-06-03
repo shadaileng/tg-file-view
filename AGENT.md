@@ -4,30 +4,66 @@
 
 ---
 
-## Current Phase: feat/post-sync-auto-thumb — 同步完成后自动生成缩略图/封面 ✅
+## Current Phase: feat/thumbnail-management-fix — 缩略图管理 4 大问题修复 🔧
 
-**分支**: `feat/post-sync-auto-thumb`
+**分支**: `feat/thumbnail-management-fix`
 
-### 需求背景
-同步完成后不自动生成缩略图和视频封面，用户必须手动到缩略图管理页面点击批量生成。应利用已有的生产者-消费者 `ThumbnailWorkerPool` 自动触发。
+### 问题清单
+1. **缩略图管理无自动更新** — 前端只加载一次，不轮询
+2. **处理中无阶段/进度显示** — `ThumbJob` 缺少 `phase` / `progress` 字段
+3. **视频封面极慢** — 全量下载视频 + ffmpeg（可耗时数分钟）
+4. **取消盲区** — Worker 处理中不检查取消，最终覆盖 `completed`
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| `_bg_sync` 增加 post-sync 缩略图/封面自动入队 | `api/sync.py` | 否 |
-| `_SUPPORTED_TYPES` 加入 `"video"` | `services/task_queue.py` | 否 |
-| 新增 `generate_video_cover()` (ffmpeg 提取首帧) | `services/task_queue.py` | 否 |
-| `_process_job` 按 file_type 分流 (photo/sticker→Pillow, video→ffmpeg) | `services/task_queue.py` | 否 |
-| Dockerfile 安装 ffmpeg | `Dockerfile` | 否 |
-| 新增 `thumb_video_cover_time` 配置项 | `config.py` | 否 |
+| `ThumbJob` 新增 `phase` + `progress` 字段 | `models.py` | 否（SQLite MO 兼容） |
+| `ThumbJobOut` 新增 `phase` + `progress` | `api/thumbnails.py` | 否 |
+| `_process_job` 拆分为 3 路径：视频TG缩略图 / 图片Pillow / 视频ffmpeg回退 | `services/task_queue.py` | 否 |
+| 新增 `_download_telegram_thumb()` (下载 TG 预生成缩略图，几KB) | `services/task_queue.py` | 否 |
+| 3 个取消检查点 (checkpoint 0/1/2/3) 防止 completed 覆盖 cancelled | `services/task_queue.py` | 否 |
+| 前端轮询 + 阶段进度展示 | `ThumbnailsView.vue` | 否 |
 
 ### 场景设计
 
-#### S1 — Happy Path: 同步后自动生成图片缩略图
+#### S1 — Happy Path: 视频封面用 TG 缩略图
 ```
-GIVEN 频道同步完成，有 3 张新 photo 文件（thumb_path=NULL）
-WHEN  _bg_sync 进入 post-sync 阶段
+GIVEN 视频文件，TG 缩略图可用
+WHEN  worker 处理该 job
+THEN  下载 TG 缩略图（~10KB，<1s）
+      thumb_type = "telegram"
+      job.phase: processing → downloading → completed
+```
+
+#### S2 — Edge: TG 缩略图不可用，回退 ffmpeg
+```
+GIVEN 视频文件，TG 缩略图为空或下载失败
+WHEN  worker 处理该 job
+THEN  回退到完整下载 + ffmpeg 提取封面
+      thumb_type = "auto"
+```
+
+#### S3 — Happy Path: 前端自动轮询
+```
+GIVEN 有 pending/processing job
+WHEN  用户停留在缩略图管理页面
+THEN  每 2s 自动刷新 jobs + stats，显示阶段标签和进度条
+```
+
+#### S4 — Edge: 下载中取消（修复 bug）
+```
+GIVEN job 正在 _ensure_cached 下载文件
+WHEN  用户点击取消 → DB status = "cancelled"
+THEN  下载完成后 session.refresh(job)，检测到 cancelled → return（不写 completed）
+```
+
+#### S5 — Edge: 无活跃任务时停止轮询
+```
+GIVEN 所有 job 都已完成/失败/取消
+WHEN  前端检测到 hasActive = false
+THEN  停止轮询
+```
 THEN  创建 3 个 ThumbJob (status=pending)，入队到 ThumbnailWorkerPool
       Worker 下载缓存 → Pillow 生成缩略图 → 更新 file.thumb_path
 ```
