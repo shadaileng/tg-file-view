@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,8 +10,9 @@ from loguru import logger
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.utils import utc_iso
 from database import get_db
-from models import Channel, SyncTask
+from models import Channel, SyncTask, File as FileModel, ThumbJob
 from config import Settings
 from services.telegram_client import get_telegram_service, AuthState
 
@@ -49,9 +51,9 @@ def _sync_task_to_dict(task: SyncTask) -> dict:
         "synced_files": task.synced_files,
         "skipped_files": task.skipped_files,
         "errors": json.loads(task.errors) if task.errors else [],
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "created_at": task.created_at.isoformat() if task.created_at else None,
+        "started_at": utc_iso(task.started_at),
+        "completed_at": utc_iso(task.completed_at),
+        "created_at": utc_iso(task.created_at),
     }
 
 
@@ -61,6 +63,9 @@ async def _bg_sync(channel_id: int, task_id: str):
     Creates its own database session for isolation from the HTTP request.
     Passes task_id so sync_channel reuses the API-created task instead
     of creating a new one (Bug #1 fix).
+
+    After sync completes successfully, triggers automatic thumbnail/cover
+    generation for files missing thumbnails (post-sync phase).
     """
     from database import AsyncSessionLocal
     from services.sync_engine import sync_channel
@@ -69,6 +74,18 @@ async def _bg_sync(channel_id: int, task_id: str):
         try:
             settings = Settings()
             await sync_channel(channel_id, session, settings, task_id=task_id)
+
+            # Post-sync: auto-trigger thumbnail/cover generation for files
+            # in this channel that don't yet have thumbnails.
+            try:
+                async with AsyncSessionLocal() as ps_session:
+                    created = await _trigger_post_sync_thumbs(ps_session, channel_id)
+                    if created > 0:
+                        logger.info("Post-sync: created {} thumb/cover jobs for channel_id={}",
+                                    created, channel_id)
+            except Exception as e:
+                logger.warning("Post-sync thumb trigger failed (non-fatal): channel_id={} error={}",
+                               channel_id, e)
         except Exception as e:
             logger.error("Background sync failed: channel_id={} task_id={} error={}",
                          channel_id, task_id, e)
@@ -87,6 +104,90 @@ async def _bg_sync(channel_id: int, task_id: str):
                 logger.error("Failed to mark task {} as failed: {}", task_id, inner)
         finally:
             _running_syncs.pop(task_id, None)
+
+
+async def _trigger_post_sync_thumbs(session: AsyncSession, channel_id: int) -> int:
+    """Create ThumbJob + enqueue for files in channel that need thumbnails/covers.
+
+    Queries files with thumb_path IS NULL and file_type in ("photo","sticker","video"),
+    then skips files that already have a pending/processing ThumbJob (anti-duplicate).
+    Creates ThumbJob records and enqueues them into the ThumbnailWorkerPool.
+
+    Returns:
+        Number of ThumbJob records created.
+
+    Scenario coverage:
+        S1: photo files → ThumbJob created + Pillow thumbnail in worker pool
+        S2: video files → ThumbJob created + ffmpeg cover in worker pool
+        S3: mixed types → only photo/sticker/video get jobs, documents ignored
+        S4: all files have thumbs → returns 0, nothing to do
+        S5: some files have pending job → skip those, only create for remaining
+        S6: worker pool not available → returns 0, logs warning
+    """
+    from services.task_queue import get_thumb_worker_pool, _SUPPORTED_TYPES
+
+    # Check worker pool availability (S6)
+    pool = get_thumb_worker_pool()
+    if pool is None:
+        logger.warning("Thumbnail worker pool not available, skip post-sync thumb generation")
+        return 0
+
+    # Query files needing thumbs/covers (photo, sticker, video only)
+    result = await session.execute(
+        select(FileModel).where(
+            FileModel.channel_id == channel_id,
+            FileModel.thumb_path.is_(None),
+            FileModel.file_type.in_(_SUPPORTED_TYPES),
+        )
+    )
+    files_needing_thumb = result.scalars().all()
+
+    if not files_needing_thumb:
+        logger.debug("Post-sync: all files in channel_id={} already have thumbnails, nothing to do", channel_id)
+        return 0
+
+    # Get file_ids that already have pending/processing ThumbJob (S5 anti-duplicate)
+    file_ids_needing = {f.id for f in files_needing_thumb}
+    existing_jobs_result = await session.execute(
+        select(ThumbJob.file_id).where(
+            ThumbJob.file_id.in_(file_ids_needing),
+            ThumbJob.status.in_(["pending", "processing"]),
+        )
+    )
+    existing_file_ids = set(existing_jobs_result.scalars().all())
+
+    # Create ThumbJob + enqueue for files without existing pending job
+    created = 0
+    skipped = 0
+    for f in files_needing_thumb:
+        if f.id in existing_file_ids:
+            skipped += 1
+            continue
+
+        job = ThumbJob(
+            id=str(uuid.uuid4()),
+            file_id=f.id,
+            file_name=f.file_name,
+            mime_type=f.mime_type,
+            status="pending",
+            priority=3,  # post-sync jobs: normal priority
+        )
+        session.add(job)
+        await session.flush()  # get job.id without full commit yet
+        pool.enqueue(str(job.id), f.id, f.file_type)
+        created += 1
+
+    await session.commit()
+
+    if skipped > 0:
+        logger.info(
+            "Post-sync thumb jobs: created={} skipped_existing={} for channel_id={}",
+            created, skipped, channel_id,
+        )
+    else:
+        logger.debug("Post-sync thumb jobs: created={} for channel_id={}", created, channel_id)
+
+    return created
 
 
 # ---------------------------------------------------------------------------

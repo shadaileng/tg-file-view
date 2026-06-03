@@ -1,5 +1,47 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 同步完成后自动生成缩略图/视频封面
+
+### 问题
+同步完成后不自动生成缩略图和视频封面，用户必须手动到缩略图管理页面点击批量生成。已有的 `ThumbnailWorkerPool` 生产者-消费者池未在同步完成后自动触发。
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/sync.py` | 新增 `_trigger_post_sync_thumbs()`: 同步完成后为缺失缩略图的文件创建 ThumbJob + 入队；`_bg_sync` 增加 post-sync 触发阶段 |
+| `services/task_queue.py` | `_SUPPORTED_TYPES` 加入 `"video"`; 新增 `generate_video_cover()` 用 ffmpeg 提取视频封面帧 (1s→10% 回退); `_process_job` 按 file_type 分流 (photo/sticker→Pillow, video→ffmpeg) |
+| `Dockerfile` | 安装 ffmpeg (视频封面提取依赖) |
+| `config.py` | 新增 `thumb_video_cover_time` 配置项 (float, 默认 1.0s) |
+| `tests/test_task_queue.py` | 新增 7 个视频封面测试: 正常生成、无 ffmpeg、文件损坏、回退策略、视频 job 处理成功、视频 job 失败 |
+| `tests/test_post_sync_thumb.py` | 新增 7 个 post-sync 触发测试: S1-S6 场景全覆盖 |
+
+### 场景覆盖
+
+| 场景 ID | 场景 | 对应测试 |
+|---------|------|---------|
+| S1 | Post-sync 为 photo 自动创建 ThumbJob | `test_post_sync_photo_thumb_trigger` |
+| S2 | Post-sync 为 video 自动创建 ThumbJob | `test_post_sync_video_cover_trigger` |
+| S3 | 混合类型只对 supported types 创建 job | `test_post_sync_mixed_types` |
+| S4 | 全部已有缩略图跳过 | `test_post_sync_all_have_thumbs` |
+| S5 | 防重入跳过已有 pending job | `test_post_sync_skips_existing_jobs` |
+| S6 | Worker pool 不可用时跳过 | `test_post_sync_no_pool` |
+| S7 | 视频封面 ffmpeg 失败 | `test_process_job_video_no_ffmpeg` |
+| S8 | 视频封面 1s→10% 回退 | `test_generate_video_cover_fallback_position` |
+| — | 完整集成: 同步→post-sync→jobs 创建 | `test_sync_triggers_post_sync_thumb` |
+
+### 技术决策
+- Post-sync 缩略图触发为**非致命操作**（失败不阻止同步完成）
+- 视频封面先尝试提取第 1 秒帧，失败回退到 10% 时长处（ffprobe 探测）
+- 防重入：查询已有 pending/processing 的 ThumbJob，跳过重复文件
+- Docker 和 HF Space 通过 `Dockerfile` 安装 ffmpeg（本地需自行安装）
+
+### 测试
+- 新增: 14/14 PASS ✅
+- 全量回归: **205/205 PASS** ✅
+
+---
+
 ## feat: 网络诊断工具 — 全链路分段定位预览加载慢的瓶颈
 
 ### 问题

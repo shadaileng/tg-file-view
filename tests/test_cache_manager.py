@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -184,7 +184,7 @@ async def test_manual_evict(db_session):
     await _set_config(db_session, "cache_max_size_mb", "0")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     for i in range(5):
         cache_path = f"{ch.id}/{i + 1}_file_{i}.ext"
         await _touch_cache_file(cache_path, 1024)
@@ -229,7 +229,7 @@ async def test_manual_evict_already_under(db_session):
     await _set_config(db_session, "cache_max_size_mb", "100")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cache_path = f"{ch.id}/1_small_file.dat"
     await _touch_cache_file(cache_path, 1024)
     await _create_file(
@@ -257,7 +257,7 @@ async def test_evict_on_pre_check(db_session):
     await _set_config(db_session, "cache_max_size_mb", "2")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # File 1: 1MB, accessed 2 hours ago (LRU)
     cache_path_1 = f"{ch.id}/1_old.dat"
@@ -310,7 +310,7 @@ async def test_evict_respects_lru_order(db_session):
     await _set_config(db_session, "cache_max_size_mb", "1")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # File 1: accessed 3 days ago (OLDEST)
     cache_path_1 = f"{ch.id}/1_oldest.dat"
@@ -380,7 +380,7 @@ async def test_insufficient_space(db_session):
     await _set_config(db_session, "cache_max_size_mb", "1")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cache_path = f"{ch.id}/1_existing.dat"
     await _touch_cache_file(cache_path, 1024 * 1024)
 
@@ -446,7 +446,7 @@ async def test_single_file_exceeds_limit_with_other_files(db_session):
     await _set_config(db_session, "cache_max_size_mb", "1")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cache_path = f"{ch.id}/1_existing.dat"
     await _touch_cache_file(cache_path, 1024 * 512)
 
@@ -476,7 +476,7 @@ async def test_evict_missing_file(db_session):
     await _set_config(db_session, "cache_max_size_mb", "1")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # File 1: cached in DB, file exists on disk
     cache_path_1 = f"{ch.id}/1_exists.dat"
@@ -531,7 +531,7 @@ async def test_dynamic_limit(db_session):
     await _set_config(db_session, "cache_max_size_mb", "10")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Two 1MB files cached
     for i in range(2):
@@ -574,7 +574,7 @@ async def test_mark_accessed(db_session):
     """GIVEN a cached file WHEN mark_accessed THEN accessed_at is updated."""
     ch = await _create_channel(db_session)
 
-    old_time = datetime.utcnow() - timedelta(hours=5)
+    old_time = datetime.now(timezone.utc) - timedelta(hours=5)
     cache_path = f"{ch.id}/1_file.dat"
     await _touch_cache_file(cache_path, 1024)
     f = await _create_file(
@@ -591,7 +591,10 @@ async def test_mark_accessed(db_session):
     await CacheManager.mark_accessed(db_session, f)
 
     await db_session.refresh(f)
-    assert f.accessed_at > old_time
+    # SQLite + DateTime(timezone=True) still returns naive datetimes on
+    # read-back; the stored value IS UTC, so restore tzinfo for comparison.
+    assert f.accessed_at is not None
+    assert f.accessed_at.replace(tzinfo=timezone.utc) > old_time
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +605,7 @@ async def test_post_download_check_evicts_if_over(db_session):
     await _set_config(db_session, "cache_max_size_mb", "2")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Three 1MB files = 3MB > 2MB limit
     for i in range(3):
@@ -637,7 +640,7 @@ async def test_no_eviction_when_under_limit(db_session):
     await _set_config(db_session, "cache_max_size_mb", "100")
     ch = await _create_channel(db_session)
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cache_path = f"{ch.id}/1_small.dat"
     await _touch_cache_file(cache_path, 1024)
     await _create_file(

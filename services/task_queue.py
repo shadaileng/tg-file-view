@@ -1,13 +1,15 @@
 """Producer-consumer PriorityQueue thumbnail worker pool.
 
-Generates thumbnails for cached files using Pillow (photo/sticker only).
-Video thumbnails require ffmpeg — deferred to a future step.
+Generates thumbnails/covers for cached files:
+- photo/sticker: Pillow thumbnail
+- video: ffmpeg cover frame (1s or 10% position)
 """
 
 import asyncio
 import os
+import subprocess
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -27,8 +29,8 @@ _PRIORITY_MAP: dict[str, int] = {
 }
 _DEFAULT_PRIORITY = 5
 
-# Supported image types for Pillow thumbnail generation
-_SUPPORTED_TYPES = frozenset({"photo", "sticker"})
+# Supported file types for thumbnail/cover generation
+_SUPPORTED_TYPES = frozenset({"photo", "sticker", "video"})
 
 # Retry backoff in seconds
 _RETRY_BACKOFF = [1, 2, 4]
@@ -64,6 +66,117 @@ def generate_thumbnail(
     except Exception as e:
         logger.warning("Failed to generate thumbnail from {}: {}", file_path, e)
         return False
+
+
+def generate_video_cover(
+    file_path: Path,
+    cover_path: Path,
+    max_width: int = 320,
+    max_height: int = 240,
+    seek_seconds: float = 1.0,
+    fallback_percent: float = 0.1,
+) -> bool:
+    """Extract a cover frame from a video file using ffmpeg.
+
+    Strategy (S8):
+    1. Try ffmpeg -ss {seek_seconds} to grab the frame at 1s (avoids black intro frames).
+    2. If that fails, fall back to ffmpeg -ss {duration * fallback_percent} (10% position).
+
+    Returns True on success, False if ffmpeg is unavailable or the video is corrupt.
+    """
+    cover_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check ffmpeg availability
+    if not _ffmpeg_available():
+        logger.warning("ffmpeg not installed, cannot generate video cover for {}", file_path)
+        return False
+
+    scale_filter = f"scale={max_width}:{max_height}:force_original_aspect_ratio=decrease"
+
+    def _try_extract(seek: float) -> bool:
+        """Run ffmpeg to extract one frame at a given seek position."""
+        cmd = [
+            "ffmpeg",
+            "-y",                   # overwrite output
+            "-ss", str(seek),       # seek to position (seconds)
+            "-i", str(file_path),   # input file
+            "-vframes", "1",        # extract 1 frame
+            "-vf", scale_filter,    # scale while keeping aspect ratio
+            "-q:v", "2",            # quality (2 = high)
+            str(cover_path),
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,  # 30s timeout for large videos
+            )
+            if result.returncode == 0 and cover_path.exists() and cover_path.stat().st_size > 0:
+                return True
+            logger.warning(
+                "ffmpeg cover extraction failed at seek={}: returncode={} stderr={}",
+                seek, result.returncode, result.stderr[:200],
+            )
+            return False
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg cover extraction timed out at seek={}", seek)
+            return False
+        except FileNotFoundError:
+            logger.warning("ffmpeg binary not found in PATH")
+            return False
+        except Exception as e:
+            logger.warning("ffmpeg cover extraction error at seek={}: {}", seek, e)
+            return False
+
+    # Strategy 1: try at 1s (primary position)
+    if _try_extract(seek_seconds):
+        return True
+
+    # Strategy 2: fallback — probe duration and try at 10% position
+    logger.info("Primary cover extraction failed at {}s, trying fallback", seek_seconds)
+    duration = _probe_video_duration(file_path)
+    if duration and duration > 0:
+        fallback_seek = duration * fallback_percent
+        # Only retry if fallback position differs meaningfully from primary
+        if abs(fallback_seek - seek_seconds) > 0.5:
+            return _try_extract(fallback_seek)
+
+    return False
+
+
+def _ffmpeg_available() -> bool:
+    """Check if ffmpeg is installed and accessible."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _probe_video_duration(file_path: Path) -> float | None:
+    """Probe video duration in seconds using ffprobe.
+
+    Returns float seconds or None if probing fails.
+    """
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(file_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return float(result.stdout.strip())
+    except (ValueError, subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        logger.debug("Failed to probe video duration for {}: {}", file_path, e)
+    return None
 
 
 class ThumbnailWorkerPool:
@@ -216,7 +329,7 @@ class ThumbnailWorkerPool:
 
             # Mark as processing
             job.status = "processing"
-            job.started_at = datetime.utcnow()
+            job.started_at = datetime.now(timezone.utc)
             job.attempt += 1
             await session.commit()
 
@@ -234,20 +347,31 @@ class ThumbnailWorkerPool:
                 await self._handle_failure(session, job, f"Unsupported format: {file_record.file_type}")
                 return
 
-            # Step 3: Generate thumbnail
+            # Step 3: Generate thumbnail/cover (route by file_type)
             channel_id = file_record.channel_id
             thumb_rel = f"{channel_id}/{file_id}.jpg"
             thumb_full = self.thumb_dir / thumb_rel
 
-            success = generate_thumbnail(
-                cache_path, thumb_full,
-                max_width=self.max_width,
-                max_height=self.max_height,
-            )
-
-            if not success:
-                await self._handle_failure(session, job, "Thumbnail generation failed — unsupported or corrupt image")
-                return
+            if file_record.file_type == "video":
+                # Video → ffmpeg cover extraction (1s fallback to 10%)
+                success = generate_video_cover(
+                    cache_path, thumb_full,
+                    max_width=self.max_width,
+                    max_height=self.max_height,
+                )
+                if not success:
+                    await self._handle_failure(session, job, "Video cover generation failed — ffmpeg unavailable or corrupt video")
+                    return
+            else:
+                # Photo/sticker → Pillow thumbnail
+                success = generate_thumbnail(
+                    cache_path, thumb_full,
+                    max_width=self.max_width,
+                    max_height=self.max_height,
+                )
+                if not success:
+                    await self._handle_failure(session, job, "Thumbnail generation failed — unsupported or corrupt image")
+                    return
 
             # Step 4: Update file record
             file_record.thumb_path = thumb_rel
@@ -255,7 +379,7 @@ class ThumbnailWorkerPool:
 
             # Step 5: Mark job complete
             job.status = "completed"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             await session.commit()
 
             logger.info("Worker {} completed job {} → thumb: {}", worker_id, job_id, thumb_rel)
@@ -312,7 +436,7 @@ class ThumbnailWorkerPool:
         if job.attempt >= job.max_retries:
             job.status = "failed"
             job.error_msg = error_msg
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
             await session.commit()
             logger.warning("Job {} permanently failed ({} attempts): {}",
                          job.id, job.attempt, error_msg)

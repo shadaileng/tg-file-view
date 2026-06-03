@@ -8,7 +8,7 @@ The CacheManager handles:
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -247,7 +247,7 @@ class CacheManager:
     @staticmethod
     async def mark_accessed(db: AsyncSession, file_: FileModel) -> None:
         """Update accessed_at timestamp for a cached file (LRU refresh)."""
-        file_.accessed_at = datetime.utcnow()
+        file_.accessed_at = datetime.now(timezone.utc)
         await db.commit()
 
     @staticmethod
