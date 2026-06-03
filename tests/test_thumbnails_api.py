@@ -1,7 +1,7 @@
 """Tests for thumbnail API endpoints (Step 6)."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -67,7 +67,7 @@ async def _create_job(db_session, file_id: int, **kwargs) -> ThumbJob:
         attempt=kwargs.get("attempt", 0),
         max_retries=kwargs.get("max_retries", 3),
         error_msg=kwargs.get("error_msg", None),
-        created_at=kwargs.get("created_at", datetime.utcnow()),
+        created_at=kwargs.get("created_at", datetime.now(timezone.utc)),
         started_at=kwargs.get("started_at", None),
         completed_at=kwargs.get("completed_at", None),
     )

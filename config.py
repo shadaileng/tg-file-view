@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
+from api.utils import utc_iso
 from dotenv import load_dotenv
 from loguru import logger
 from pydantic import Field
@@ -40,6 +41,7 @@ class Settings(BaseSettings):
     thumb_max_width: int = 320
     thumb_max_height: int = 240
     thumb_video_chunk_preview_mb: int = 20
+    thumb_video_cover_time: float = 1.0  # seconds, fallback to 10% if this fails
     thumb_workers: int = 2
 
     # Cache
@@ -126,6 +128,7 @@ async def get_settings(db_session: AsyncSession | None = None) -> Settings:
         "thumb_max_width": "thumb_max_width",
         "thumb_max_height": "thumb_max_height",
         "thumb_video_chunk_preview_mb": "thumb_video_chunk_preview_mb",
+        "thumb_video_cover_time": "thumb_video_cover_time",
         "thumb_workers": "thumb_workers",
         "cache_max_size_mb": "cache_max_size_mb",
         "host": "host",
@@ -170,6 +173,7 @@ async def ensure_initialized(db_session: AsyncSession) -> None:
         "thumb_max_width": str(settings.thumb_max_width),
         "thumb_max_height": str(settings.thumb_max_height),
         "thumb_video_chunk_preview_mb": str(settings.thumb_video_chunk_preview_mb),
+        "thumb_video_cover_time": str(settings.thumb_video_cover_time),
         "thumb_workers": str(settings.thumb_workers),
         "cache_max_size_mb": str(settings.cache_max_size_mb),
         "host": settings.host,
@@ -215,7 +219,7 @@ ALL_CONFIG_KEYS: set[str] = {
     "api_id", "api_hash", "phone", "bot_token", "proxy_url",
     "sync_batch_size", "sync_bulk_api_limit", "sync_delay_seconds",
     "thumb_max_width", "thumb_max_height", "thumb_video_chunk_preview_mb",
-    "thumb_workers", "cache_max_size_mb",
+    "thumb_video_cover_time", "thumb_workers", "cache_max_size_mb",
     "host", "port", "admin_password", "debug",
 }
 
@@ -227,6 +231,7 @@ CONFIG_VALUE_SCHEMA: dict[str, dict] = {
     "thumb_max_width":        {"type": "int", "min": 16, "max": 4096},
     "thumb_max_height":       {"type": "int", "min": 16, "max": 4096},
     "thumb_video_chunk_preview_mb": {"type": "int", "min": 1, "max": 1024},
+    "thumb_video_cover_time": {"type": "float", "min": 0, "max": 60},
     "thumb_workers":          {"type": "int", "min": 1, "max": 16},
     "cache_max_size_mb":      {"type": "int", "min": 0, "max": 102400},
     "port":                   {"type": "int", "min": 1, "max": 65535},
@@ -253,7 +258,7 @@ async def list_all_configs(db_session) -> list[dict]:
             "key": key,
             "value": row.value if row else "",
             "editable": key not in READONLY_CONFIG_KEYS,
-            "updated_at": row.updated_at.isoformat() if row and row.updated_at else None,
+            "updated_at": utc_iso(row.updated_at) if row else None,
         })
     return output
 

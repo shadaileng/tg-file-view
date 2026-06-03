@@ -9,7 +9,7 @@ Endpoints:
 - POST /api/thumbnails/jobs/{job_id}/cancel → cancel a job
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,6 +19,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import desc as sa_desc
 
+from api.utils import utc_iso
 from database import get_db
 from models import File as FileModel, ThumbJob
 
@@ -64,9 +65,6 @@ def _job_to_dict(job: ThumbJob, thumb_path: str | None = None) -> ThumbJobOut:
     if thumb_path:
         thumb_url = f"/thumbnails/{thumb_path}"
 
-    def _iso(dt: datetime | None) -> str | None:
-        return dt.isoformat() if dt else None
-
     return ThumbJobOut(
         id=str(job.id),
         file_id=job.file_id,
@@ -79,9 +77,9 @@ def _job_to_dict(job: ThumbJob, thumb_path: str | None = None) -> ThumbJobOut:
         max_retries=job.max_retries,
         error_msg=job.error_msg,
         thumb_url=thumb_url,
-        created_at=_iso(job.created_at) or "",
-        started_at=_iso(job.started_at),
-        completed_at=_iso(job.completed_at),
+        created_at=utc_iso(job.created_at) or "",
+        started_at=utc_iso(job.started_at),
+        completed_at=utc_iso(job.completed_at),
     )
 
 
@@ -143,7 +141,7 @@ async def trigger_single_thumbnail(
         mime_type=file_record.mime_type,
         status="pending",
         priority=_get_priority(file_record.file_type),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(job)
     await db.commit()
@@ -212,7 +210,7 @@ async def generate_batch(
             mime_type=file_record.mime_type,
             status="pending",
             priority=_get_priority(file_record.file_type),
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         db.add(job)
         await db.flush()  # get the id before commit
@@ -345,7 +343,7 @@ async def cancel_thumb_job(
         )
 
     job.status = "cancelled"
-    job.completed_at = datetime.utcnow()
+    job.completed_at = datetime.now(timezone.utc)
     await db.commit()
 
     logger.info("Cancelled thumbnail job {}", job_id)
