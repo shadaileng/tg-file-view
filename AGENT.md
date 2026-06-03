@@ -4,7 +4,128 @@
 
 ---
 
-## Current Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
+## Current Phase: feat/file-preview — 文件管理查看/预览功能 ✅
+
+**分支**: `feat/file-preview`
+
+### 需求背景
+文件管理页面只能下载，无法在浏览器中直接预览。新增"查看"按钮和预览弹窗。
+
+### 变更范围矩阵
+
+| 变更点 | 影响模块 | 破坏性变更 |
+|--------|---------|:---:|
+| 新增 `GET /api/files/{file_id}/view`（inline 流式，已缓存走磁盘、未缓存走 iter_download 代理） | `api/files.py` | 否 |
+| 新增 `filesApi.view(id)` 客户端方法 | `frontend/src/api/index.js` | 否 |
+| 卡片新增"查看"按钮 + 预览弹窗（image/video/audio/不支持降级） | `frontend/src/views/FilesView.vue` | 否 |
+| 新增 5 条场景测试 (S15-S19) | `tests/test_files_api.py` | 否 |
+| 新增 `scripts/diag_tg_network.py` 全链路网络诊断工具 | `scripts/` | 否 |
+
+### 新增: 网络诊断工具 (diag_tg_network.py)
+
+**背景**: 未缓存文件预览走 `iter_download` 直通 Telegram，网络链路（V2Ray SOCKS5 → Shadowsocks → DC）的每一环延迟都直接影响预览加载速度。需要一个工具分段定位瓶颈。
+
+**网络路径**:
+```
+App → SOCKS5 (127.0.0.1:1080) → V2Ray (Shadowsocks) → TG DCs
+```
+
+**7 阶段诊断**:
+
+| Stage | 测试内容 | 诊断目标 | 慢速阈值 |
+|-------|---------|---------|:---:|
+| 1 | SOCKS5 TCP 连接 + 握手 | V2Ray 端口是否正常 | >30ms |
+| 2 | 代理出口 HTTP 往返 (httpbin) | 代理出口到公网延迟 | >500ms |
+| 3 | Telegram DC 域名 DNS 解析 | DNS 解析速度 | >500ms |
+| 4 | 各 DC (5 个) TCP 连接延迟 | 最优 DC、运营商网络质量 | >500ms |
+| 5 | Telethon connect + MTProto Ping (×5) | 协议层握手 + RTT | >500ms |
+| 6 | iter_download 块延迟分布 (P50/P90/P99) | 下载吞吐量瓶颈 | P90>500ms |
+| 7 | get_entity 操作延迟 | API 调用 RTT | >2s |
+
+**慢速原因映射**:
+- Stage 1 超 30ms → V2Ray 本地监听异常或不在运行
+- Stage 2 超 500ms → 代理出口带宽/延迟差
+- Stage 5 Ping 超 500ms → 跨国代理延迟高（正常但影响预览体验）
+- Stage 6 P90 块间隔超 500ms → 代理出口不稳定或带宽低
+- Stage 7 get_entity 超 2s → 多轮 MTProto 往返（正常）
+
+### 场景设计
+
+#### S1 — Happy Path: 全链路诊断通过
+```
+GIVEN V2Ray 正常运行，代理连通，TG 已授权
+WHEN  运行 diag_tg_network.py
+THEN  7 个阶段依次执行，每阶段显示延迟（绿色<100ms/黄色<500ms/红色>500ms）
+      末尾输出汇总表格和建议
+```
+
+#### S2 — Edge: V2Ray 未启动
+```
+GIVEN V2Ray 未运行（端口 1080 无监听）
+WHEN  运行 diag_tg_network.py
+THEN  Stage 1 报告 ConnectionRefusedError，停止后续阶段
+      提示"请先启动 V2Ray: sudo systemctl start v2ray"
+```
+
+#### S3 — Edge: Telegram 未授权
+```
+GIVEN 代理正常，但未登录 TG
+WHEN  运行 diag_tg_network.py
+THEN  Stage 1-4 正常执行，Stage 5-7 跳过并提示"未授权，跳过"
+```
+
+### 预览策略
+
+| mime_type 前缀 | 渲染方式 |
+|:---|------|
+| `image/*`, `application/pdf` | `<img>` 标签 |
+| `video/*` | `<video controls>` 播放器 |
+| `audio/*` | `<audio controls>` 播放器 |
+| 其他 | 文件详情卡片 + 下载按钮 |
+
+### 核心设计：直通 TG 流式代理
+未缓存文件不走磁盘：`FastAPI StreamingResponse ← iter_download() ← Telegram`，浏览器拿到 blob 后通过 `URL.createObjectURL` 渲染。
+
+### 场景设计
+
+#### S1 — Happy Path: 查看已缓存图片/视频
+```
+GIVEN 某频道有已缓存的图片/视频
+WHEN  用户点击"查看"按钮
+THEN  弹出预览弹窗，正确渲染图片/视频，底部显示文件名、大小、类型
+```
+
+#### S2 — Happy Path: 未缓存文件从 TG 直通预览
+```
+GIVEN 文件未缓存，Telegram 已授权
+WHEN  用户点击"查看"
+THEN  弹窗显示 loading，数据通过 iter_download 从 TG 流式传输到浏览器展示
+```
+
+#### S3 — Edge: 文件类型不支持预览
+```
+GIVEN 文件 mime_type 非 image/video/audio（如 zip、docx）
+WHEN  用户点击"查看"
+THEN  弹窗显示文件详情（名称、类型、大小）+ "下载文件"按钮
+```
+
+#### S4 — Edge: 未缓存且未授权
+```
+GIVEN 文件未缓存，Telegram 未授权
+WHEN  用户点击"查看"
+THEN  弹窗显示"加载失败"错误提示
+```
+
+#### S5 — Edge: 文件不存在
+```
+GIVEN file_id 不存在
+WHEN  请求 GET /api/files/{file_id}/view
+THEN  返回 404
+```
+
+---
+
+## Previous Phase: feat/sync-phase-progress — 同步进度分阶段可视化 & 详细信息展示 ✅
 
 **分支**: `feat/sync-phase-progress`
 

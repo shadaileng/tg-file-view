@@ -200,10 +200,14 @@ async def is_admin(password: str | None) -> bool:
     return password == stored
 
 
-# Config keys that cannot be modified via API (Telegram credentials etc.)
+# Config keys that cannot be modified via API
 READONLY_CONFIG_KEYS: set[str] = {
-    "api_id", "api_hash", "phone", "bot_token",
-    "proxy_url", "admin_password",
+    # Application credentials (Telegram-issued constants)
+    "api_id", "api_hash",
+    # Deployment parameters (require restart to take effect)
+    "host", "port", "debug",
+    # Security-sensitive
+    "admin_password",
 }
 
 # All registered config keys (mirrors key_to_field in get_settings)

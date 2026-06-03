@@ -100,6 +100,14 @@
           <!-- Actions -->
           <div class="px-3 pb-3 flex gap-1">
             <button
+              @click="handleView(file)"
+              class="flex-1 px-2 py-1.5 text-xs bg-blue-50 dark:bg-blue-900/20
+                     text-blue-600 dark:text-blue-400 rounded hover:bg-blue-100 dark:hover:bg-blue-900/30
+                     transition-colors"
+            >
+              查看
+            </button>
+            <button
               @click="handleDownload(file)"
               class="flex-1 px-2 py-1.5 text-xs bg-indigo-50 dark:bg-indigo-900/20
                      text-indigo-600 dark:text-indigo-400 rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/30
@@ -161,11 +169,110 @@
         </button>
       </div>
     </div>
+
+    <!-- Preview Modal -->
+    <Teleport to="body">
+      <div
+        v-if="preview.visible"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+        @click.self="closePreview"
+      >
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-4xl w-full mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+          <!-- Header -->
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+            <span class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate max-w-[70%]">
+              {{ preview.file?.file_name }}
+            </span>
+            <button
+              @click="closePreview"
+              class="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded transition-colors"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Body -->
+          <div class="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[200px]">
+            <!-- Loading -->
+            <div v-if="preview.loading" class="text-center text-gray-400 py-8">
+              <div class="inline-block w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+              <p class="text-sm">加载中...</p>
+            </div>
+
+            <!-- Error -->
+            <div v-else-if="preview.error" class="text-center py-8">
+              <p class="text-red-500 text-sm">{{ preview.error }}</p>
+              <button
+                @click="closePreview"
+                class="mt-2 px-3 py-1 text-xs text-indigo-500 hover:underline"
+              >关闭</button>
+            </div>
+
+            <!-- Image -->
+            <img
+              v-else-if="preview.type === 'image'"
+              :src="preview.url"
+              :alt="preview.file?.file_name"
+              class="max-w-full max-h-[75vh] object-contain rounded"
+            />
+
+            <!-- Video -->
+            <video
+              v-else-if="preview.type === 'video'"
+              :src="preview.url"
+              controls
+              class="max-w-full max-h-[75vh] rounded"
+            ></video>
+
+            <!-- Audio -->
+            <audio
+              v-else-if="preview.type === 'audio'"
+              :src="preview.url"
+              controls
+              class="w-full"
+            ></audio>
+
+            <!-- Unsupported fallback -->
+            <div v-else-if="preview.url" class="text-center py-8 space-y-3">
+              <p class="text-gray-400 dark:text-gray-500 text-sm">该文件类型不支持浏览器内预览</p>
+              <div class="space-y-1 text-xs text-gray-400 dark:text-gray-500">
+                <p>文件名：{{ preview.file?.file_name }}</p>
+                <p>类型：{{ preview.file?.mime_type }}</p>
+                <p>大小：{{ formatSize(preview.file?.file_size) }}</p>
+              </div>
+              <button
+                @click="handleDownload(preview.file)"
+                class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+              >下载文件</button>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div v-if="preview.file && !preview.loading && !preview.error" class="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
+            <span class="text-xs text-gray-400">
+              {{ formatSize(preview.file.file_size) }} · {{ preview.file.mime_type }}
+            </span>
+            <div class="flex gap-2">
+              <button
+                @click="handleDownload(preview.file)"
+                class="px-3 py-1 text-xs bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+              >下载</button>
+              <button
+                @click="closePreview"
+                class="px-3 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+              >关闭</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { channelsApi, filesApi, thumbnailsApi } from '../api/index'
 
@@ -177,6 +284,15 @@ const totalFiles = ref(0)
 const offset = ref(0)
 const limit = ref(50)
 const filesLoading = ref(false)
+
+const preview = reactive({
+  visible: false,
+  loading: false,
+  error: '',
+  type: '',       // 'image' | 'video' | 'audio' | 'unsupported'
+  url: '',
+  file: null,
+})
 
 function formatSize(bytes) {
   if (!bytes || bytes === 0) return '0 B'
@@ -293,6 +409,53 @@ async function handleGenerateThumb(file) {
   } catch {
     // handled by interceptor
   }
+}
+
+async function handleView(file) {
+  preview.visible = true
+  preview.loading = true
+  preview.error = ''
+  preview.url = ''
+  preview.file = file
+
+  // Determine preview type from mime_type
+  const mime = file.mime_type || ''
+  if (mime.startsWith('image/') || mime.startsWith('application/pdf')) {
+    preview.type = 'image'
+  } else if (mime.startsWith('video/')) {
+    preview.type = 'video'
+  } else if (mime.startsWith('audio/')) {
+    preview.type = 'audio'
+  } else {
+    preview.type = 'unsupported'
+  }
+
+  try {
+    const response = await filesApi.view(file.id)
+    const blob = response.data
+    // Revoke old URL if any
+    if (preview.url && preview.url.startsWith('blob:')) {
+      URL.revokeObjectURL(preview.url)
+    }
+    preview.url = URL.createObjectURL(blob)
+    preview.loading = false
+  } catch (err) {
+    const detail = err?.response?.data?.detail || err?.message || '未知错误'
+    preview.error = `加载失败：${detail}`
+    preview.loading = false
+  }
+}
+
+function closePreview() {
+  if (preview.url && preview.url.startsWith('blob:')) {
+    URL.revokeObjectURL(preview.url)
+  }
+  preview.visible = false
+  preview.loading = false
+  preview.error = ''
+  preview.type = ''
+  preview.url = ''
+  preview.file = null
 }
 
 onMounted(loadChannels)

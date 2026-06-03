@@ -1,5 +1,74 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 网络诊断工具 — 全链路分段定位预览加载慢的瓶颈
+
+### 问题
+未缓存文件预览走 `iter_download` 直通 Telegram，网络链路上的每一环（V2Ray SOCKS5 → Shadowsocks → Telegram DC）都可能造成加载慢，但缺少工具定位具体瓶颈。
+
+### 修复
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `scripts/diag_tg_network.py` | 新增 | 7 阶段网络诊断工具 |
+
+### 7 阶段诊断
+
+| Stage | 测试内容 | 诊断目标 |
+|-------|---------|---------|
+| 1 | SOCKS5 TCP 连接 + 握手 | V2Ray 端口是否正常 |
+| 2 | 代理出口 HTTP 往返 (httpbin) | 代理出口公网延迟 |
+| 3 | Telegram DC DNS 解析 | DNS 分辨率 |
+| 4 | 各 DC (5+5) TCP 连接延迟 | 最优 DC 选择 |
+| 5 | Telethon connect + MTProto Ping(×5) | 协议层 RTT |
+| 6 | iter_download 块延迟 P50/P90/P99 + TTFB | 下载吞吐量瓶颈 |
+| 7 | get_entity/get_messages 延迟 | API 调用 RTT |
+
+### 慢速原因映射
+- Stage 1 TCP >30ms → V2Ray 本地监听异常
+- Stage 2 HTTP >500ms → 代理出口带宽/延迟差
+- Stage 5 Ping >500ms → 跨国代理延迟高
+- Stage 6 P90 块间隔 >500ms → 代理出口不稳定或带宽低
+- Stage 7 get_entity >2s → 多轮 MTProto 往返（正常）
+
+### 优化方向
+- 换用亚洲节点代理（新加坡 DC5 延迟可能更低）
+- 升级到 VLESS+XTLS 协议
+- 增加本地缓存命中率（减小 iter_download 依赖）
+- 使用 MTProto Proxy 直连
+
+### 测试
+- 工具为独立诊断脚本，不改变应用逻辑，不影响现有测试
+
+---
+
+## feat: 文件管理查看/预览功能
+
+### 问题
+文件管理页面只有下载按钮，无法在浏览器中直接预览文件（图片、视频、音频等），每次需要下载到本地再打开，流程低效。
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `api/files.py` | 新增 `GET /api/files/{file_id}/view` 端点：已缓存走磁盘 `_file_stream` inline 返回，未缓存走 `_stream_from_telegram()` 通过 `iter_download` 直通代理（不落盘）；新增 `_stream_from_telegram` 异步生成器 |
+| `frontend/src/api/index.js` | `filesApi` 新增 `view(id)` 方法，`responseType: 'blob'` |
+| `frontend/src/views/FilesView.vue` | 卡片操作区新增"查看"按钮；新增 `preview` reactive 状态和 `handleView`/`closePreview` 函数；新增 `<Teleport>` 预览弹窗，支持 image/video/audio 渲染和不支持格式降级展示 |
+| `tests/test_files_api.py` | 新增 5 条场景测试：S15 已缓存图片 inline、S16 已缓存视频 inline、S17 未缓存从 TG 流式代理、S18 文件不存在 404、S19 未缓存未授权 400 |
+
+### 预览策略
+
+| mime_type 前缀 | 渲染 | 备注 |
+|:---|------|------|
+| `image/*`, `application/pdf` | `<img>` | 直接展示 |
+| `video/*` | `<video controls>` | HTML5 播放器 |
+| `audio/*` | `<audio controls>` | HTML5 播放器 |
+| 其他 | 详情卡片 + 下载按钮 | 不支持浏览器内预览的文件类型 |
+
+### 核心设计
+未缓存文件不落盘：`FastAPI StreamingResponse ← Telethon iter_download ← Telegram`，前端用 `URL.createObjectURL(blob)` 渲染。
+
+---
+
 ## feat: 同步进度分阶段可视化 & 详细信息展示
 
 ### 问题

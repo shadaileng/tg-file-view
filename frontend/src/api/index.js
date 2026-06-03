@@ -42,6 +42,7 @@ export const filesApi = {
     api.get(`/channels/${channelId}/files`, { params: { offset, limit } }),
   get: (id) => api.get(`/files/${id}`),
   download: (id) => api.get(`/files/${id}/download`, { responseType: 'blob' }),
+  view: (id) => api.get(`/files/${id}/view`, { responseType: 'blob', timeout: 0 }),
   cache: (id) => api.post(`/files/${id}/cache`),
   deleteCache: (id) => api.delete(`/files/${id}/cache`),
 }
