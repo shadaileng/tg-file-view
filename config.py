@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     thumb_video_chunk_preview_mb: int = 20
     thumb_video_cover_time: float = 1.0  # seconds, fallback to 10% if this fails
     thumb_workers: int = 2
+    thumb_job_timeout: float = 600  # seconds, 0 = no timeout
 
     # Cache
     cache_max_size_mb: int = 0  # 0 = no limit
@@ -130,6 +131,7 @@ async def get_settings(db_session: AsyncSession | None = None) -> Settings:
         "thumb_video_chunk_preview_mb": "thumb_video_chunk_preview_mb",
         "thumb_video_cover_time": "thumb_video_cover_time",
         "thumb_workers": "thumb_workers",
+        "thumb_job_timeout": "thumb_job_timeout",
         "cache_max_size_mb": "cache_max_size_mb",
         "host": "host",
         "port": "port",
@@ -175,6 +177,7 @@ async def ensure_initialized(db_session: AsyncSession) -> None:
         "thumb_video_chunk_preview_mb": str(settings.thumb_video_chunk_preview_mb),
         "thumb_video_cover_time": str(settings.thumb_video_cover_time),
         "thumb_workers": str(settings.thumb_workers),
+        "thumb_job_timeout": str(settings.thumb_job_timeout),
         "cache_max_size_mb": str(settings.cache_max_size_mb),
         "host": settings.host,
         "port": str(settings.port),
@@ -219,7 +222,7 @@ ALL_CONFIG_KEYS: set[str] = {
     "api_id", "api_hash", "phone", "bot_token", "proxy_url",
     "sync_batch_size", "sync_bulk_api_limit", "sync_delay_seconds",
     "thumb_max_width", "thumb_max_height", "thumb_video_chunk_preview_mb",
-    "thumb_video_cover_time", "thumb_workers", "cache_max_size_mb",
+    "thumb_video_cover_time", "thumb_workers", "thumb_job_timeout", "cache_max_size_mb",
     "host", "port", "admin_password", "debug",
 }
 
@@ -233,6 +236,7 @@ CONFIG_VALUE_SCHEMA: dict[str, dict] = {
     "thumb_video_chunk_preview_mb": {"type": "int", "min": 1, "max": 1024},
     "thumb_video_cover_time": {"type": "float", "min": 0, "max": 60},
     "thumb_workers":          {"type": "int", "min": 1, "max": 16},
+    "thumb_job_timeout":      {"type": "float", "min": 0, "max": 3600},
     "cache_max_size_mb":      {"type": "int", "min": 0, "max": 102400},
     "port":                   {"type": "int", "min": 1, "max": 65535},
     "debug":                  {"type": "bool"},

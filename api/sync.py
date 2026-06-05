@@ -107,11 +107,11 @@ async def _bg_sync(channel_id: int, task_id: str):
 
 
 async def _trigger_post_sync_thumbs(session: AsyncSession, channel_id: int) -> int:
-    """Create ThumbJob + enqueue for files in channel that need thumbnails/covers.
+    """Create ThumbJob records for files in channel that need thumbnails/covers.
 
     Queries files with thumb_path IS NULL and file_type in ("photo","sticker","video"),
     then skips files that already have a pending/processing ThumbJob (anti-duplicate).
-    Creates ThumbJob records and enqueues them into the ThumbnailWorkerPool.
+    Creates ThumbJob records — workers poll DB directly, no manual enqueue needed.
 
     Returns:
         Number of ThumbJob records created.
@@ -156,7 +156,7 @@ async def _trigger_post_sync_thumbs(session: AsyncSession, channel_id: int) -> i
     )
     existing_file_ids = set(existing_jobs_result.scalars().all())
 
-    # Create ThumbJob + enqueue for files without existing pending job
+    # Create ThumbJob for files without existing pending job
     created = 0
     skipped = 0
     for f in files_needing_thumb:
@@ -174,10 +174,10 @@ async def _trigger_post_sync_thumbs(session: AsyncSession, channel_id: int) -> i
         )
         session.add(job)
         await session.flush()  # get job.id without full commit yet
-        pool.enqueue(str(job.id), f.id, f.file_type)
         created += 1
 
     await session.commit()
+    # Workers poll DB directly — no manual enqueue needed
 
     if skipped > 0:
         logger.info(

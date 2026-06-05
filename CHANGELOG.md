@@ -1,5 +1,91 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 任务池超时保护 + 可观测日志 + 死代码清理
+
+### 问题
+1. 无任务级超时：`_process_job()` 裸调用，Telethon 下载 / Pillow 处理卡住时 Worker 永久阻塞
+2. 无心跳日志：任务空转时看不到任何输出，无法判断卡死 vs 空闲
+3. 死代码：`generate_video_cover()` / `_probe_video_duration()` / `_ffmpeg_available()` 从未被调用
+
+### 新增
+
+| 文件 | 变更 |
+|------|------|
+| `services/task_queue.py` | `__init__` 新增 `job_timeout` 参数（默认 600s）|
+| `services/task_queue.py` | `_worker_loop` 用 `asyncio.wait_for` 包裹 `_process_job`，超时触发 `_mark_job_timeout` |
+| `services/task_queue.py` | 新增 `_mark_job_timeout()` 方法：超时后标记失败或重试 |
+| `services/task_queue.py` | Producer 心跳日志：空闲时每 30s 报告 idle + 队列深度 |
+| `services/task_queue.py` | Worker 心跳日志 + 处理进度日志（含 elapsed 秒数） |
+| `services/task_queue.py` | `_stats` 计数器（claimed/completed/failed/timed_out）+ 关停汇总 |
+| `config.py` | 新增 `thumb_job_timeout` 设置项（含 key 映射 / seed / schema 校验） |
+| `main.py` | `ThumbnailWorkerPool` 初始化传入 `job_timeout` |
+| `.env.example` | 新增 `TG_THUMB_JOB_TIMEOUT=600` |
+| `tests/test_task_queue.py` | 新增 3 个超时测试：`test_job_timeout_triggers_mark_timeout`、`test_job_timeout_retry`、`test_no_timeout_when_disabled` |
+
+### 移除
+
+| 文件 | 变更 |
+|------|------|
+| `services/task_queue.py` | 删除 `generate_video_cover()`（79-160）、`_ffmpeg_available()`（163-173）、`_probe_video_duration()`（176-194） |
+| `services/task_queue.py` | 移除 `import subprocess` |
+| `tests/test_task_queue.py` | 删除 4 个 ffmpeg 测试：`test_generate_video_cover_success/no_ffmpeg/corrupt_video/fallback_position` |
+
+### 效果
+- 任务卡死不再导致 Worker 永久阻塞（超时后自动释放）
+- `tail -f data/app.log` 可看到心跳日志确认 Pool 运行状态
+- 处理日志显示 elapsed 时间方便排查慢任务
+- 删除 ~110 行死代码
+
+### 测试
+- 新增 3 个超时测试，删除 4 个 ffmpeg 测试
+- 全量：205/205 PASS
+
+## fix: 移除缩略图生成的全量文件下载与缓存
+
+### 问题
+点击"缩略图"按钮后，Worker 会：
+1. **视频**：TG 缩略图不可用时回退到完整下载视频（数百MB）+ ffmpeg → 极大浪费带宽和磁盘
+2. **图片/贴纸**：下载完整文件到 `data/cache/`，永久缓存为 `is_cached=True`，不会自动清理
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `services/task_queue.py` | `_process_video_via_tg_thumb`: TG 缩略图不可用时直接 fail，不再回退 ffmpeg |
+| `services/task_queue.py` | 删除 `_process_video_ffmpeg_fallback` 方法（全量下载+ffmpeg提取封面） |
+| `services/task_queue.py` | `_ensure_cached` 新增 `permanent=False` 参数：下载到临时目录，不更新 DB |
+| `services/task_queue.py` | `_process_image_thumb`: 使用 `permanent=False`，生成缩略图后立即删除临时文件 |
+| `tests/test_task_queue.py` | `test_process_job_video_success` 改为 mock TG 缩略图下载 |
+| `tests/test_task_queue.py` | `test_process_job_video_no_ffmpeg` → `test_process_job_video_no_tg_thumb`，不依赖 ffmpeg |
+
+### 效果
+- 视频缩略图仅从 TG 获取（~10KB），绝不下载完整视频
+- 图片缩略图临时下载，用完即删，不残留缓存文件
+
+## feat: 缩略图管理 4 大问题修复 — 自动刷新 / 阶段进度 / TG缩略图 / 取消修复
+
+### 问题
+1. 缩略图管理页面无自动更新，用户需要手动刷新
+2. 处理中的任务不显示阶段（下载中/生成中），无法得知进度
+3. 视频封面需要完整下载视频 + ffmpeg 提取，极慢（分钟级）
+4. 处理中取消后 Worker 不感知，用 `completed` 覆盖 `cancelled`
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `models.py` | `ThumbJob` 新增 `phase`（阶段标记）和 `progress`（0-100）字段 |
+| `api/thumbnails.py` | `ThumbJobOut` 新增 `phase` + `progress`；`cancel_thumb_job` 同步设 `phase="cancelled"` |
+| `services/task_queue.py` | 重构：`_process_job` 拆为 `_process_video_via_tg_thumb` + `_process_image_thumb`；新增 `_download_telegram_thumb()` 直接下载 TG 预生成缩略图（~10KB）；每次长时间操作后 `session.refresh(job)` 检查取消状态 |
+| `ThumbnailsView.vue` | 新增 2s 轮询、阶段进度条、自动刷新指示器、`phase/progress` 展示 |
+
+### 性能对比
+
+| 场景 | 修复前 | 修复后 |
+|------|-------|-------|
+| 视频封面 | 下载完整 mp4（数百MB）+ ffmpeg → 1~5 分钟 | TG 缩略图直接下载（~10KB）→ <1s |
+| 取消响应 | Worker 完成后覆盖为 `completed` | 3 个 checkpoint 检查，不会覆盖 |
+
 ## fix: 全链路 UTC 时间戳规范化 — 修复前端 8 小时时差
 
 ### 问题
@@ -67,7 +153,7 @@ SQLite + `DateTime(timezone=True)` 读回时丢失时区信息，导致：
 | S4 | 全部已有缩略图跳过 | `test_post_sync_all_have_thumbs` |
 | S5 | 防重入跳过已有 pending job | `test_post_sync_skips_existing_jobs` |
 | S6 | Worker pool 不可用时跳过 | `test_post_sync_no_pool` |
-| S7 | 视频封面 ffmpeg 失败 | `test_process_job_video_no_ffmpeg` |
+| S7 | 视频封面 TG 缩略图不可用 | `test_process_job_video_no_tg_thumb` |
 | S8 | 视频封面 1s→10% 回退 | `test_generate_video_cover_fallback_position` |
 | — | 完整集成: 同步→post-sync→jobs 创建 | `test_sync_triggers_post_sync_thumb` |
 

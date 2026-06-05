@@ -4,107 +4,87 @@
 
 ---
 
-## Current Phase: feat/post-sync-auto-thumb — 同步完成后自动生成缩略图/封面 ✅
+## Current Phase: feat/thumb-pool-timeout-logging — 任务池超时保护 + 可观测日志 + 死代码清理
 
-**分支**: `feat/post-sync-auto-thumb`
+**分支**: `feat/thumbnail-management-fix`
 
-### 需求背景
-同步完成后不自动生成缩略图和视频封面，用户必须手动到缩略图管理页面点击批量生成。应利用已有的生产者-消费者 `ThumbnailWorkerPool` 自动触发。
+### 问题
+1. **无任务级超时** — `_process_job()` 裸调用，Telethon 下载 / Pillow 处理卡住时 Worker 永久阻塞
+2. **无心跳日志** — 无法判断 Pool 是正常空闲还是卡死
+3. **死代码** — `generate_video_cover` / `_probe_video_duration` / `_ffmpeg_available` 从未被调用
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| `_bg_sync` 增加 post-sync 缩略图/封面自动入队 | `api/sync.py` | 否 |
-| `_SUPPORTED_TYPES` 加入 `"video"` | `services/task_queue.py` | 否 |
-| 新增 `generate_video_cover()` (ffmpeg 提取首帧) | `services/task_queue.py` | 否 |
-| `_process_job` 按 file_type 分流 (photo/sticker→Pillow, video→ffmpeg) | `services/task_queue.py` | 否 |
-| Dockerfile 安装 ffmpeg | `Dockerfile` | 否 |
-| 新增 `thumb_video_cover_time` 配置项 | `config.py` | 否 |
+| 新增 `job_timeout` 构造参数 + `TG_THUMB_JOB_TIMEOUT` 环境变量 | `task_queue.py`, `config.py`, `main.py`, `.env.example` | 否 |
+| `_worker_loop` 加 `asyncio.wait_for` 超时包裹 | `task_queue.py` | 否 |
+| 新增 `_mark_job_timeout()` 方法 | `task_queue.py` | 否 |
+| Producer/Worker 周期心跳日志（30s）+ 处理进度日志（含 elapsed） | `task_queue.py` | 否 |
+| 新增 `_stats` 计数器 + 关停汇总 | `task_queue.py` | 否 |
+| 删除 `generate_video_cover` / `_ffmpeg_available` / `_probe_video_duration` 死代码 | `task_queue.py` | 是 |
+| 删除 4 个 ffmpeg 测试 + 新增 3 个超时测试 | `test_task_queue.py` | 否 |
+| 新增 `thumb_job_timeout` 配置项（含 seed/映射/校验） | `config.py` | 否 |
 
 ### 场景设计
 
-#### S1 — Happy Path: 同步后自动生成图片缩略图
+#### S1 — Happy Path: 正常完成不触发超时
 ```
-GIVEN 频道同步完成，有 3 张新 photo 文件（thumb_path=NULL）
-WHEN  _bg_sync 进入 post-sync 阶段
-THEN  创建 3 个 ThumbJob (status=pending)，入队到 ThumbnailWorkerPool
-      Worker 下载缓存 → Pillow 生成缩略图 → 更新 file.thumb_path
-```
-
-#### S2 — Happy Path: 同步后自动生成视频封面
-```
-GIVEN 频道同步完成，有 2 个新 video 文件（thumb_path=NULL）
-WHEN  _bg_sync 进入 post-sync 阶段
-THEN  创建 2 个 ThumbJob，入队
-      Worker 下载缓存 → ffmpeg 提取首帧(1s / 10%) → JPEG 保存到 thumbnails/
+GIVEN TG 缩略图可在 2s 内下载完成
+WHEN  Worker 开始处理该 job
+THEN  asyncio.wait_for 超时为 600s（远大于实际耗时），正常完成
+      job.status = "completed"
 ```
 
-#### S3 — Happy Path: 混合文件类型同时处理
+#### S2 — Edge: 任务超时被终止
 ```
-GIVEN 同步完成，有 photo×3、video×2、document×1（均 thumb_path=NULL）
-WHEN  post-sync 触发
-THEN  只创建 5 个 job（跳过 document），photo 用 Pillow，video 用 ffmpeg
-```
-
-#### S4 — Edge: 文件已全部有缩略图
-```
-GIVEN 频道所有文件的 thumb_path 不为 NULL
-WHEN  post-sync 触发
-THEN  跳过，返回 0
+GIVEN Telethon download_media() 因网络问题卡住超过 job_timeout
+WHEN  Worker 处理该 job
+THEN  asyncio.TimeoutError → _mark_job_timeout(job_id)
+      job.status = "failed" (或 "pending" 若还有重试)
+      error_msg = "Job timed out after 600s"
+      Worker 释放并继续取下一个任务
 ```
 
-#### S5 — Edge: 部分文件已有 pending/processing job
+#### S3 — Edge: 超时+重试至耗尽
 ```
-GIVEN 同步完成，5 个文件缺缩略图，其中 2 个已有 pending ThumbJob
-WHEN  post-sync 触发
-THEN  只为剩余 3 个文件创建 ThumbJob（防重入）
-```
-
-#### S6 — Edge: Worker pool 未启动
-```
-GIVEN _bg_sync 调用时 thumb worker pool 为 None
-WHEN  post-sync 尝试创建 job
-THEN  返回 0，记录 warning
+GIVEN 同一 job 多次超时
+WHEN  重试次数达到 max_retries
+THEN  job.status = "failed" (永久失败)
 ```
 
-#### S7 — Edge: 视频封面生成失败（ffmpeg 不可用或视频损坏）
+#### S4 — Happy Path: 心跳日志显示池健康
 ```
-GIVEN Worker 拿到 video 类型 job，ffmpeg 命令失败
-WHEN  generate_video_cover() 返回 False
-THEN  job→failed (重试 3 次后)
+GIVEN Pool 已启动，无 pending 任务
+WHEN  等待 30s
+THEN  日志: "[heartbeat] Producer idle (queue=0)"
+      "[heartbeat] Worker 0 idle (queue=0)"
 ```
 
-#### S8 — Happy Path: 视频封面取 1s 处帧，失败回退到 10%
+#### S5 — Happy Path: 任务处理进度日志
 ```
-GIVEN 视频时长 30 秒
-WHEN  生成封面
-THEN  先尝试 ffmpeg -ss 1 取第 1 秒帧
-      若失败，回退到 ffprobe 探测时长 × 10% 处帧
+GIVEN 队列中有任务
+WHEN  Worker 处理
+THEN  日志: "[worker N] processing job abc123 (file_id=42)..."
+      "[worker N] completed job abc123 (elapsed 2.3s)"
+      超时时: "[worker N] job xyz timed out after 605s (limit: 600s)"
 ```
 
 ### 场景→测试映射
 
-| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
-|---------|---------|-------------|------|
-| S1 | 同步后自动生成图片缩略图 | `test_post_sync_photo_thumb_trigger` | 集成 |
-| S2 | 同步后自动生成视频封面 | `test_post_sync_video_cover_trigger` | 集成 |
-| S3 | 混合文件类型 | `test_post_sync_mixed_types` | 集成 |
-| S4 | 全部已有缩略图 | `test_post_sync_all_have_thumbs` | 集成 |
-| S5 | 部分已有 pending job | `test_post_sync_skips_existing_jobs` | 集成 |
-| S6 | Worker pool 不可用 | `test_post_sync_no_pool` | 单元 |
-| S7 | 视频封面生成失败 | `test_process_job_video_no_ffmpeg` | 单元 |
-| S8 | 视频封面 1s→10% 回退 | `test_generate_video_cover_fallback_position` | 单元 |
-| — | `generate_video_cover` 成功 | `test_generate_video_cover_success` | 单元 |
-| — | `generate_video_cover` 无 ffmpeg | `test_generate_video_cover_no_ffmpeg` | 单元 |
-| — | 视频 job 处理成功 | `test_process_job_video_success` | 单元 |
-| — | 同步 API 触发 post-sync | `test_sync_triggers_post_sync_thumb` | 集成 |
+| 场景 ID | 对应测试函数 | 类型 |
+|---------|-------------|------|
+| S1 | `test_no_timeout_when_disabled` | 单元 |
+| S2 | `test_job_timeout_triggers_mark_timeout` | 单元 |
+| S3 | `test_job_timeout_retry` | 单元 |
+| S4 | N/A — 日志行为 | 手动 |
+| S5 | N/A — 日志行为 | 手动 |
 
 ### 关键设计决策
-- **Post-sync 非致命**：缩略图触发失败不阻止同步完成，仅记录 warning
-- **防重入**：查询已有 pending/processing ThumbJob 的 file_id，跳过重复创建
-- **仅支持类型**：photo、sticker、video — 其他文件类型不创建 ThumbJob
-- **视频封面策略**：先 1s 主策略 → 失败回退 10%（使用 ffprobe 探测时长）
+- 超时默认 600s（10 分钟），`TG_THUMB_JOB_TIMEOUT=0` 可关闭
+- 心跳间隔 30s，避免刷屏
+- 进度日志显示 elapsed 时间，方便排查慢任务
+- 死代码删除：`generate_video_cover` 等 ffmpeg 函数定义存在但从未被调用（视频只用 TG 缩略图）
 
 ---
 
@@ -344,7 +324,7 @@ tg_file_viewer/
 │   ├── test_files_api.py      # ✅ 14 tests
 │   ├── test_sync_engine.py    # ✅ 12 tests
 │   ├── test_sync_api.py       # ✅ 12 tests
-│   ├── test_task_queue.py     # ✅ 11 tests
+│   ├── test_task_queue.py     # ✅ 17 tests
 │   ├── test_thumbnails_api.py # ✅ 13 tests
 │   └── test_data/          # 测试数据
 │   ├── test_config_api.py    # ✅ 12 tests
@@ -628,6 +608,7 @@ set_telegram_service(svc)
 | `TG_PROXY_URL` | socks5://host:port | — |
 | `TG_SYNC_BATCH_SIZE` | 批大小 | 500 |
 | `TG_THUMB_WORKERS` | 缩略图 worker 数 | 2 |
+| `TG_THUMB_JOB_TIMEOUT` | 单任务超时秒数 (0=关闭) | 600 |
 | `TG_CACHE_MAX_SIZE_MB` | 缓存上限 (0=无限) | 0 |
 | `TG_ADMIN_PASSWORD` | 管理员密码 | — |
 | `TG_PORT` | 服务端口 | 8000 |

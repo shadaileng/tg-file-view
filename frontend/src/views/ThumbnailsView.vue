@@ -85,7 +85,14 @@
       <p class="text-gray-400 dark:text-gray-500 text-sm">暂无缩略图任务</p>
     </div>
 
-    <div v-else class="space-y-2">
+    <template v-else>
+      <!-- Auto-refresh indicator -->
+      <div v-if="isPolling" class="flex items-center gap-1.5 text-xs text-gray-400 mb-2">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
+        自动刷新中
+      </div>
+
+      <div class="space-y-2">
       <div
         v-for="job in jobs"
         :key="job.id"
@@ -106,6 +113,20 @@
               <span>{{ job.mime_type }}</span>
               <span>优先级: {{ job.priority }}</span>
               <span>尝试: {{ job.attempt }}/{{ job.max_retries }}</span>
+            </div>
+            <!-- Phase progress bar (only for processing jobs) -->
+            <div v-if="job.status === 'processing'" class="mt-2">
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-gray-500">{{ phaseLabel(job) }}</span>
+                <span class="text-gray-500">{{ job.progress }}%</span>
+              </div>
+              <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                <div
+                  class="h-1.5 rounded-full transition-all duration-500"
+                  :class="progressColor(job)"
+                  :style="{ width: job.progress + '%' }"
+                />
+              </div>
             </div>
             <div v-if="job.thumb_url" class="mt-2">
               <img :src="job.thumb_url" class="w-16 h-16 object-cover rounded border border-gray-200 dark:border-gray-600" />
@@ -146,11 +167,12 @@
         </button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { thumbnailsApi } from '../api/index'
 
 const stats = ref({})
@@ -159,6 +181,9 @@ const jobsLoading = ref(false)
 const statusFilter = ref('pending')
 const page = ref(1)
 const pageSize = 20
+const isPolling = ref(false)
+
+let pollTimer = null
 
 const showBatch = ref(false)
 const batchInput = ref('')
@@ -192,28 +217,106 @@ function jobStatusClass(status) {
   return map[status] || ''
 }
 
+function phaseLabel(job) {
+  const map = {
+    pending: '⏳ 等待中',
+    processing: '🔄 准备中',
+    downloading: '📥 下载中',
+    generating: '🎨 生成中',
+    completed: '✅ 完成',
+    failed: '❌ 失败',
+    cancelled: '⛔ 已取消',
+  }
+  return map[job.phase] || job.status || ''
+}
+
+function progressColor(job) {
+  const map = {
+    processing: 'bg-blue-400',
+    downloading: 'bg-indigo-400',
+    generating: 'bg-purple-400',
+  }
+  return map[job.phase] || 'bg-blue-500'
+}
+
+// Check if there are any active jobs needing polling
+const hasActive = computed(() =>
+  jobs.value.some(
+    (j) => j.status === 'pending' || j.status === 'processing'
+  )
+)
+
+function startPolling() {
+  if (pollTimer) return
+  isPolling.value = true
+  pollTimer = setInterval(() => {
+    loadJobs(true)   // 静默刷新，不显示 loading 避免闪烁
+    loadStats()
+  }, 2000)
+}
+
+function stopPolling() {
+  isPolling.value = false
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+// Watch hasActive: if active jobs appear, start polling; if all done, stop
+watch(hasActive, (active) => {
+  active ? startPolling() : stopPolling()
+})
+
 async function loadStats() {
   try {
     const { data } = await thumbnailsApi.stats()
-    stats.value = data
+    // 只有数据变化时才更新，避免无意义的重渲染
+    if (JSON.stringify(stats.value) !== JSON.stringify(data)) {
+      stats.value = data
+    }
   } catch {
     // handled by interceptor
   }
 }
 
-async function loadJobs() {
-  jobsLoading.value = true
+// 比较两个 job 列表在展示层面是否完全相同（按 id 逐一对比关键字段）
+function isJobListEqual(oldJobs, newJobs) {
+  if (oldJobs.length !== newJobs.length) return false
+  return oldJobs.every((oldJob, i) => {
+    const n = newJobs[i]
+    return oldJob.id === n.id &&
+           oldJob.status === n.status &&
+           oldJob.progress === n.progress &&
+           oldJob.phase === n.phase &&
+           oldJob.error_msg === n.error_msg &&
+           oldJob.thumb_url === n.thumb_url &&
+           oldJob.completed_at === n.completed_at
+  })
+}
+
+async function loadJobs(silent = false) {
+  // 静默刷新时不显示 loading，避免轮询时的界面闪烁
+  if (!silent) {
+    jobsLoading.value = true
+  }
   try {
     const { data } = await thumbnailsApi.listJobs({
       status: statusFilter.value,
       offset: (page.value - 1) * pageSize,
       limit: pageSize,
     })
-    jobs.value = data.jobs || []
+    const newJobs = data.jobs || []
+    // 只有数据变化时才更新，避免无意义的重渲染
+    if (!isJobListEqual(jobs.value, newJobs)) {
+      jobs.value = newJobs
+    }
   } catch {
     jobs.value = []
   } finally {
-    jobsLoading.value = false
+    if (!silent) {
+      jobsLoading.value = false
+    }
   }
 }
 
@@ -249,8 +352,13 @@ watch(statusFilter, () => {
   loadJobs()
 })
 
-onMounted(() => {
-  loadStats()
-  loadJobs()
+onMounted(async () => {
+  await Promise.all([loadStats(), loadJobs()])
+  // Start polling if there are active jobs on mount
+  if (stats.value?.pending > 0 || stats.value?.processing > 0) {
+    startPolling()
+  }
 })
+
+onUnmounted(stopPolling)
 </script>
