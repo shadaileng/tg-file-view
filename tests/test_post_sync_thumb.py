@@ -88,14 +88,15 @@ async def client():
 # ---------------------------------------------------------------------------
 
 async def test_post_sync_photo_thumb_trigger(db_session, tmp_path: Path):
-    """GIVEN 3 photo files with thumb_path=NULL WHEN post-sync trigger THEN 3 ThumbJobs created + enqueued."""
+    """GIVEN 3 photo files with thumb_path=NULL WHEN post-sync trigger THEN 3 ThumbJobs created.
+    Workers poll DB directly — no manual enqueue needed."""
     ch = await _seed_channel(db_session, tg_id=1001)
 
     f1 = await _seed_file(db_session, ch.id, message_id=1, file_type="photo", thumb_path=None)
     f2 = await _seed_file(db_session, ch.id, message_id=2, file_type="photo", thumb_path=None)
     f3 = await _seed_file(db_session, ch.id, message_id=3, file_type="photo", thumb_path=None)
 
-    # Create worker pool
+    # Create worker pool (needed for _trigger_post_sync_thumbs to get pool ref)
     cache_dir = tmp_path / "cache"
     thumb_dir = tmp_path / "thumbnails"
     pool = ThumbnailWorkerPool(num_workers=1, thumb_dir=str(thumb_dir), cache_dir=str(cache_dir))
@@ -105,7 +106,7 @@ async def test_post_sync_photo_thumb_trigger(db_session, tmp_path: Path):
         created = await _trigger_post_sync_thumbs(db_session, ch.id)
         assert created == 3
 
-        # Verify ThumbJob records
+        # Verify ThumbJob records in DB (single source of truth)
         result = await db_session.execute(
             select(ThumbJob).where(ThumbJob.file_id.in_([f1.id, f2.id, f3.id]))
         )
@@ -113,12 +114,6 @@ async def test_post_sync_photo_thumb_trigger(db_session, tmp_path: Path):
         assert len(jobs) == 3
         for j in jobs:
             assert j.status == "pending"
-
-        # Verify jobs are in queue
-        queued = []
-        while not pool._queue.empty():
-            queued.append(pool._queue.get_nowait())
-        assert len(queued) == 3
     finally:
         reset_thumb_worker_pool()
 
@@ -248,11 +243,14 @@ async def test_post_sync_skips_existing_jobs(db_session, tmp_path: Path):
         created = await _trigger_post_sync_thumbs(db_session, ch.id)
         assert created == 3  # f3, f4, f5
 
-        # Only 3 NEW jobs in queue (f1, f2 have existing)
-        queued = []
-        while not pool._queue.empty():
-            queued.append(pool._queue.get_nowait())
-        assert len(queued) == 3
+        # Verify only 3 NEW jobs exist (f1, f2 have existing)
+        result = await db_session.execute(
+            select(ThumbJob).where(ThumbJob.file_id.in_([f3.id, f4.id, f5.id]))
+        )
+        new_jobs = result.scalars().all()
+        assert len(new_jobs) == 3
+        for j in new_jobs:
+            assert j.status == "pending"
     finally:
         reset_thumb_worker_pool()
 
@@ -298,7 +296,7 @@ async def test_sync_triggers_post_sync_thumb(db_session, client: AsyncClient, tm
     from services.telegram_client import set_telegram_service
     set_telegram_service(svc)
 
-    # Start worker pool (needed for enqueue)
+    # Start worker pool (needed for _trigger_post_sync_thumbs to work)
     cache_dir = tmp_path / "cache"
     thumb_dir = tmp_path / "thumbnails"
     pool = ThumbnailWorkerPool(num_workers=1, thumb_dir=str(thumb_dir), cache_dir=str(cache_dir))

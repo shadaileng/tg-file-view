@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
         cache_dir=str(cache_dir),
         max_width=settings.thumb_max_width,
         max_height=settings.thumb_max_height,
+        job_timeout=settings.thumb_job_timeout,
     )
     set_thumb_worker_pool(thumb_pool)
     await thumb_pool.start()

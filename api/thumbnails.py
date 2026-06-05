@@ -151,8 +151,8 @@ async def trigger_single_thumbnail(
     await db.commit()
     await db.refresh(job)
 
-    # Enqueue
-    pool.enqueue(str(job.id), file_id, file_record.file_type)
+    # Signal producer to immediately claim this new job
+    pool.signal_new_jobs()
     logger.info("Triggered single thumbnail: file_id={} job_id={}", file_id, job.id)
 
     return {"job_id": str(job.id), "file_id": file_id, "status": "pending"}
@@ -219,9 +219,10 @@ async def generate_batch(
         db.add(job)
         await db.flush()  # get the id before commit
         created_ids.append(str(job.id))
-        pool.enqueue(str(job.id), fid, file_record.file_type)
 
     await db.commit()
+    # Signal producer to immediately claim these new jobs
+    pool.signal_new_jobs()
 
     logger.info(
         "Batch thumbnail: requested={} created={} skipped={} not_found={}",
@@ -350,6 +351,10 @@ async def cancel_thumb_job(
     job.phase = "cancelled"
     job.completed_at = datetime.now(timezone.utc)
     await db.commit()
+
+    # Notify worker pool for O(1) in-memory cancel detection
+    pool = _require_worker_pool()
+    pool.cancel_job(job_id)
 
     logger.info("Cancelled thumbnail job {}", job_id)
     return {"job_id": job_id, "status": "cancelled"}

@@ -80,7 +80,6 @@ async def _create_job(db_session, file_id: int, **kwargs) -> ThumbJob:
 def _mock_worker_pool():
     """Create a mock worker pool and set it globally."""
     pool = MagicMock(spec=ThumbnailWorkerPool)
-    pool.enqueue = MagicMock()
     set_thumb_worker_pool(pool)
     return pool
 
@@ -110,9 +109,7 @@ async def test_trigger_single_file(db_session):
     assert job is not None
     assert job.status == "pending"
 
-    # Verify enqueued
-    pool.enqueue.assert_called_once()
-
+    # Workers poll DB directly — no manual enqueue, job will be picked up automatically
     reset_thumb_worker_pool()
 
 
@@ -184,9 +181,7 @@ async def test_generate_batch(db_session):
     )).scalars().all()
     assert len(count) == 3
 
-    # Verify enqueued 3 times
-    assert pool.enqueue.call_count == 3
-
+    # Workers poll DB directly — no manual enqueue needed
     reset_thumb_worker_pool()
 
 
@@ -329,6 +324,8 @@ async def test_cancel_pending_job(db_session):
     """GIVEN pending job WHEN POST cancel THEN status=cancelled."""
     from api.thumbnails import cancel_thumb_job
 
+    _mock_worker_pool()
+
     ch = await _create_channel(db_session)
     f = await _create_file(db_session, ch.id)
     job = await _create_job(db_session, f.id, status="pending")
@@ -339,6 +336,8 @@ async def test_cancel_pending_job(db_session):
     await db_session.refresh(job)
     assert job.status == "cancelled"
     assert job.completed_at is not None
+
+    reset_thumb_worker_pool()
 
 
 # ---------------------------------------------------------------------------

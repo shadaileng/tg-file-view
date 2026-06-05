@@ -85,13 +85,14 @@
       <p class="text-gray-400 dark:text-gray-500 text-sm">暂无缩略图任务</p>
     </div>
 
-    <!-- Auto-refresh indicator -->
-    <div v-if="isPolling" class="flex items-center gap-1.5 text-xs text-gray-400">
-      <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
-      自动刷新中
-    </div>
+    <template v-else>
+      <!-- Auto-refresh indicator -->
+      <div v-if="isPolling" class="flex items-center gap-1.5 text-xs text-gray-400 mb-2">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
+        自动刷新中
+      </div>
 
-    <div v-else class="space-y-2">
+      <div class="space-y-2">
       <div
         v-for="job in jobs"
         :key="job.id"
@@ -166,6 +167,7 @@
         </button>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -248,7 +250,7 @@ function startPolling() {
   if (pollTimer) return
   isPolling.value = true
   pollTimer = setInterval(() => {
-    loadJobs()
+    loadJobs(true)   // 静默刷新，不显示 loading 避免闪烁
     loadStats()
   }, 2000)
 }
@@ -269,25 +271,52 @@ watch(hasActive, (active) => {
 async function loadStats() {
   try {
     const { data } = await thumbnailsApi.stats()
-    stats.value = data
+    // 只有数据变化时才更新，避免无意义的重渲染
+    if (JSON.stringify(stats.value) !== JSON.stringify(data)) {
+      stats.value = data
+    }
   } catch {
     // handled by interceptor
   }
 }
 
-async function loadJobs() {
-  jobsLoading.value = true
+// 比较两个 job 列表在展示层面是否完全相同（按 id 逐一对比关键字段）
+function isJobListEqual(oldJobs, newJobs) {
+  if (oldJobs.length !== newJobs.length) return false
+  return oldJobs.every((oldJob, i) => {
+    const n = newJobs[i]
+    return oldJob.id === n.id &&
+           oldJob.status === n.status &&
+           oldJob.progress === n.progress &&
+           oldJob.phase === n.phase &&
+           oldJob.error_msg === n.error_msg &&
+           oldJob.thumb_url === n.thumb_url &&
+           oldJob.completed_at === n.completed_at
+  })
+}
+
+async function loadJobs(silent = false) {
+  // 静默刷新时不显示 loading，避免轮询时的界面闪烁
+  if (!silent) {
+    jobsLoading.value = true
+  }
   try {
     const { data } = await thumbnailsApi.listJobs({
       status: statusFilter.value,
       offset: (page.value - 1) * pageSize,
       limit: pageSize,
     })
-    jobs.value = data.jobs || []
+    const newJobs = data.jobs || []
+    // 只有数据变化时才更新，避免无意义的重渲染
+    if (!isJobListEqual(jobs.value, newJobs)) {
+      jobs.value = newJobs
+    }
   } catch {
     jobs.value = []
   } finally {
-    jobsLoading.value = false
+    if (!silent) {
+      jobsLoading.value = false
+    }
   }
 }
 

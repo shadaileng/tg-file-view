@@ -4,143 +4,87 @@
 
 ---
 
-## Current Phase: feat/thumbnail-management-fix — 缩略图管理 4 大问题修复 🔧
+## Current Phase: feat/thumb-pool-timeout-logging — 任务池超时保护 + 可观测日志 + 死代码清理
 
 **分支**: `feat/thumbnail-management-fix`
 
-### 问题清单
-1. **缩略图管理无自动更新** — 前端只加载一次，不轮询
-2. **处理中无阶段/进度显示** — `ThumbJob` 缺少 `phase` / `progress` 字段
-3. **视频封面极慢** — 全量下载视频 + ffmpeg（可耗时数分钟）
-4. **取消盲区** — Worker 处理中不检查取消，最终覆盖 `completed`
+### 问题
+1. **无任务级超时** — `_process_job()` 裸调用，Telethon 下载 / Pillow 处理卡住时 Worker 永久阻塞
+2. **无心跳日志** — 无法判断 Pool 是正常空闲还是卡死
+3. **死代码** — `generate_video_cover` / `_probe_video_duration` / `_ffmpeg_available` 从未被调用
 
 ### 变更范围矩阵
 
 | 变更点 | 影响模块 | 破坏性变更 |
 |--------|---------|:---:|
-| `ThumbJob` 新增 `phase` + `progress` 字段 | `models.py` | 否（SQLite MO 兼容） |
-| `ThumbJobOut` 新增 `phase` + `progress` | `api/thumbnails.py` | 否 |
-| `_process_job` 拆分为 3 路径：视频TG缩略图 / 图片Pillow / 视频ffmpeg回退 | `services/task_queue.py` | 否 |
-| 新增 `_download_telegram_thumb()` (下载 TG 预生成缩略图，几KB) | `services/task_queue.py` | 否 |
-| 3 个取消检查点 (checkpoint 0/1/2/3) 防止 completed 覆盖 cancelled | `services/task_queue.py` | 否 |
-| 前端轮询 + 阶段进度展示 | `ThumbnailsView.vue` | 否 |
+| 新增 `job_timeout` 构造参数 + `TG_THUMB_JOB_TIMEOUT` 环境变量 | `task_queue.py`, `config.py`, `main.py`, `.env.example` | 否 |
+| `_worker_loop` 加 `asyncio.wait_for` 超时包裹 | `task_queue.py` | 否 |
+| 新增 `_mark_job_timeout()` 方法 | `task_queue.py` | 否 |
+| Producer/Worker 周期心跳日志（30s）+ 处理进度日志（含 elapsed） | `task_queue.py` | 否 |
+| 新增 `_stats` 计数器 + 关停汇总 | `task_queue.py` | 否 |
+| 删除 `generate_video_cover` / `_ffmpeg_available` / `_probe_video_duration` 死代码 | `task_queue.py` | 是 |
+| 删除 4 个 ffmpeg 测试 + 新增 3 个超时测试 | `test_task_queue.py` | 否 |
+| 新增 `thumb_job_timeout` 配置项（含 seed/映射/校验） | `config.py` | 否 |
 
 ### 场景设计
 
-#### S1 — Happy Path: 视频封面用 TG 缩略图
+#### S1 — Happy Path: 正常完成不触发超时
 ```
-GIVEN 视频文件，TG 缩略图可用
-WHEN  worker 处理该 job
-THEN  下载 TG 缩略图（~10KB，<1s）
-      thumb_type = "telegram"
-      job.phase: processing → downloading → completed
-```
-
-#### S2 — Edge: TG 缩略图不可用，回退 ffmpeg
-```
-GIVEN 视频文件，TG 缩略图为空或下载失败
-WHEN  worker 处理该 job
-THEN  回退到完整下载 + ffmpeg 提取封面
-      thumb_type = "auto"
+GIVEN TG 缩略图可在 2s 内下载完成
+WHEN  Worker 开始处理该 job
+THEN  asyncio.wait_for 超时为 600s（远大于实际耗时），正常完成
+      job.status = "completed"
 ```
 
-#### S3 — Happy Path: 前端自动轮询
+#### S2 — Edge: 任务超时被终止
 ```
-GIVEN 有 pending/processing job
-WHEN  用户停留在缩略图管理页面
-THEN  每 2s 自动刷新 jobs + stats，显示阶段标签和进度条
-```
-
-#### S4 — Edge: 下载中取消（修复 bug）
-```
-GIVEN job 正在 _ensure_cached 下载文件
-WHEN  用户点击取消 → DB status = "cancelled"
-THEN  下载完成后 session.refresh(job)，检测到 cancelled → return（不写 completed）
+GIVEN Telethon download_media() 因网络问题卡住超过 job_timeout
+WHEN  Worker 处理该 job
+THEN  asyncio.TimeoutError → _mark_job_timeout(job_id)
+      job.status = "failed" (或 "pending" 若还有重试)
+      error_msg = "Job timed out after 600s"
+      Worker 释放并继续取下一个任务
 ```
 
-#### S5 — Edge: 无活跃任务时停止轮询
+#### S3 — Edge: 超时+重试至耗尽
 ```
-GIVEN 所有 job 都已完成/失败/取消
-WHEN  前端检测到 hasActive = false
-THEN  停止轮询
-```
-THEN  创建 3 个 ThumbJob (status=pending)，入队到 ThumbnailWorkerPool
-      Worker 下载缓存 → Pillow 生成缩略图 → 更新 file.thumb_path
+GIVEN 同一 job 多次超时
+WHEN  重试次数达到 max_retries
+THEN  job.status = "failed" (永久失败)
 ```
 
-#### S2 — Happy Path: 同步后自动生成视频封面
+#### S4 — Happy Path: 心跳日志显示池健康
 ```
-GIVEN 频道同步完成，有 2 个新 video 文件（thumb_path=NULL）
-WHEN  _bg_sync 进入 post-sync 阶段
-THEN  创建 2 个 ThumbJob，入队
-      Worker 下载缓存 → ffmpeg 提取首帧(1s / 10%) → JPEG 保存到 thumbnails/
-```
-
-#### S3 — Happy Path: 混合文件类型同时处理
-```
-GIVEN 同步完成，有 photo×3、video×2、document×1（均 thumb_path=NULL）
-WHEN  post-sync 触发
-THEN  只创建 5 个 job（跳过 document），photo 用 Pillow，video 用 ffmpeg
+GIVEN Pool 已启动，无 pending 任务
+WHEN  等待 30s
+THEN  日志: "[heartbeat] Producer idle (queue=0)"
+      "[heartbeat] Worker 0 idle (queue=0)"
 ```
 
-#### S4 — Edge: 文件已全部有缩略图
+#### S5 — Happy Path: 任务处理进度日志
 ```
-GIVEN 频道所有文件的 thumb_path 不为 NULL
-WHEN  post-sync 触发
-THEN  跳过，返回 0
-```
-
-#### S5 — Edge: 部分文件已有 pending/processing job
-```
-GIVEN 同步完成，5 个文件缺缩略图，其中 2 个已有 pending ThumbJob
-WHEN  post-sync 触发
-THEN  只为剩余 3 个文件创建 ThumbJob（防重入）
-```
-
-#### S6 — Edge: Worker pool 未启动
-```
-GIVEN _bg_sync 调用时 thumb worker pool 为 None
-WHEN  post-sync 尝试创建 job
-THEN  返回 0，记录 warning
-```
-
-#### S7 — Edge: 视频封面生成失败（ffmpeg 不可用或视频损坏）
-```
-GIVEN Worker 拿到 video 类型 job，ffmpeg 命令失败
-WHEN  generate_video_cover() 返回 False
-THEN  job→failed (重试 3 次后)
-```
-
-#### S8 — Happy Path: 视频封面取 1s 处帧，失败回退到 10%
-```
-GIVEN 视频时长 30 秒
-WHEN  生成封面
-THEN  先尝试 ffmpeg -ss 1 取第 1 秒帧
-      若失败，回退到 ffprobe 探测时长 × 10% 处帧
+GIVEN 队列中有任务
+WHEN  Worker 处理
+THEN  日志: "[worker N] processing job abc123 (file_id=42)..."
+      "[worker N] completed job abc123 (elapsed 2.3s)"
+      超时时: "[worker N] job xyz timed out after 605s (limit: 600s)"
 ```
 
 ### 场景→测试映射
 
-| 场景 ID | 场景描述 | 对应测试函数 | 类型 |
-|---------|---------|-------------|------|
-| S1 | 同步后自动生成图片缩略图 | `test_post_sync_photo_thumb_trigger` | 集成 |
-| S2 | 同步后自动生成视频封面 | `test_post_sync_video_cover_trigger` | 集成 |
-| S3 | 混合文件类型 | `test_post_sync_mixed_types` | 集成 |
-| S4 | 全部已有缩略图 | `test_post_sync_all_have_thumbs` | 集成 |
-| S5 | 部分已有 pending job | `test_post_sync_skips_existing_jobs` | 集成 |
-| S6 | Worker pool 不可用 | `test_post_sync_no_pool` | 单元 |
-| S7 | 视频封面生成失败 | `test_process_job_video_no_ffmpeg` | 单元 |
-| S8 | 视频封面 1s→10% 回退 | `test_generate_video_cover_fallback_position` | 单元 |
-| — | `generate_video_cover` 成功 | `test_generate_video_cover_success` | 单元 |
-| — | `generate_video_cover` 无 ffmpeg | `test_generate_video_cover_no_ffmpeg` | 单元 |
-| — | 视频 job 处理成功 | `test_process_job_video_success` | 单元 |
-| — | 同步 API 触发 post-sync | `test_sync_triggers_post_sync_thumb` | 集成 |
+| 场景 ID | 对应测试函数 | 类型 |
+|---------|-------------|------|
+| S1 | `test_no_timeout_when_disabled` | 单元 |
+| S2 | `test_job_timeout_triggers_mark_timeout` | 单元 |
+| S3 | `test_job_timeout_retry` | 单元 |
+| S4 | N/A — 日志行为 | 手动 |
+| S5 | N/A — 日志行为 | 手动 |
 
 ### 关键设计决策
-- **Post-sync 非致命**：缩略图触发失败不阻止同步完成，仅记录 warning
-- **防重入**：查询已有 pending/processing ThumbJob 的 file_id，跳过重复创建
-- **仅支持类型**：photo、sticker、video — 其他文件类型不创建 ThumbJob
-- **视频封面策略**：先 1s 主策略 → 失败回退 10%（使用 ffprobe 探测时长）
+- 超时默认 600s（10 分钟），`TG_THUMB_JOB_TIMEOUT=0` 可关闭
+- 心跳间隔 30s，避免刷屏
+- 进度日志显示 elapsed 时间，方便排查慢任务
+- 死代码删除：`generate_video_cover` 等 ffmpeg 函数定义存在但从未被调用（视频只用 TG 缩略图）
 
 ---
 
@@ -380,7 +324,7 @@ tg_file_viewer/
 │   ├── test_files_api.py      # ✅ 14 tests
 │   ├── test_sync_engine.py    # ✅ 12 tests
 │   ├── test_sync_api.py       # ✅ 12 tests
-│   ├── test_task_queue.py     # ✅ 11 tests
+│   ├── test_task_queue.py     # ✅ 17 tests
 │   ├── test_thumbnails_api.py # ✅ 13 tests
 │   └── test_data/          # 测试数据
 │   ├── test_config_api.py    # ✅ 12 tests
@@ -664,6 +608,7 @@ set_telegram_service(svc)
 | `TG_PROXY_URL` | socks5://host:port | — |
 | `TG_SYNC_BATCH_SIZE` | 批大小 | 500 |
 | `TG_THUMB_WORKERS` | 缩略图 worker 数 | 2 |
+| `TG_THUMB_JOB_TIMEOUT` | 单任务超时秒数 (0=关闭) | 600 |
 | `TG_CACHE_MAX_SIZE_MB` | 缓存上限 (0=无限) | 0 |
 | `TG_ADMIN_PASSWORD` | 管理员密码 | — |
 | `TG_PORT` | 服务端口 | 8000 |
