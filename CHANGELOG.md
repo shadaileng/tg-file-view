@@ -1,5 +1,37 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 前端 Vitest 测试套件 (60 tests)
+
+### 问题
+前端代码虽已完成 Vue 3 组件开发，但缺少自动化测试覆盖，无法在 CI/重构中保障正确性。
+
+### 新增
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/vite.config.js` | 添加 vitest 配置 (happy-dom 环境, test 路径) |
+| `frontend/package.json` | 新增 `test` / `test:watch` 脚本 |
+| `frontend/src/tests/setup.js` | 测试环境初始化 (localStorage/matchMedia/CustomEvent mock) |
+| `frontend/src/tests/useDarkMode.test.js` | useDarkMode composable 测试 (4): localStorage 持久化、toggle、系统偏好检测 |
+| `frontend/src/tests/api.test.js` | API 模块测试 (8): 端点完整性验证 |
+| `frontend/src/tests/App.test.js` | App.vue 测试 (6): 导航菜单、Health检查、授权状态、暗色模式 |
+| `frontend/src/tests/AuthView.test.js` | AuthView 测试 (6): 3种状态展示、发码/验证/2FA流程、退出、错误处理 |
+| `frontend/src/tests/DashboardView.test.js` | DashboardView 测试 (3): loading、统计卡片、同步记录 |
+| `frontend/src/tests/ChannelsView.test.js` | ChannelsView 测试 (8): loading/空列表/频道列表、添加弹窗/空校验/数字username、删除确认 |
+| `frontend/src/tests/FilesView.test.js` | FilesView 测试 (3): 频道选择、文件加载、空频道提示 |
+| `frontend/src/tests/SyncView.test.js` | SyncView 测试 (3): 频道列表、触发同步、阶段指示、任务历史 |
+| `frontend/src/tests/ThumbnailsView.test.js` | ThumbnailsView 测试 (7): 统计卡片、空列表、任务卡片、批量生成、进度条、筛选、自动刷新 |
+| `frontend/src/tests/CacheView.test.js` | CacheView 测试 (4): loading、缓存统计、无限上限、手动淘汰 |
+| `frontend/src/tests/SettingsView.test.js` | SettingsView 测试 (5): loading、分组展示、脱敏、只读、编辑弹窗 |
+
+### 架构决策
+
+- 使用 `vitest` + `@vue/test-utils` + `happy-dom`，与 Vite 构建体系无缝集成
+- 所有 API 层通过 `vi.hoisted()` + `vi.mock()` 模式注入 Mock，无需真实后端
+- 每个 View 独立测试文件，关注渲染状态、用户交互和边界条件
+
+### 测试统计: 60/60 PASS ✅ (前端) + 205/205 PASS ✅ (后端)
+
 ## feat: 任务池超时保护 + 可观测日志 + 死代码清理
 
 ### 问题
@@ -939,5 +971,4 @@ ALTER TABLE sync_tasks ADD COLUMN progress INTEGER NOT NULL DEFAULT 0;
 | `tests/test_database.py` | 数据库连接和 CRUD 测试 (8) |
 | `tests/test_config.py` | 配置管理测试 (10) |
 | `tests/test_models.py` | ORM 模型约束测试 (12) |
-
-### 测试统计: 30/30 PASS ✅
+

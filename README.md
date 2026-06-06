@@ -1,19 +1,8 @@
----
-title: TG File Viewer
-emoji: 📁
-colorFrom: blue
-colorTo: purple
-sdk: docker
-pinned: false
-license: mit
-short_description: Telegram channel file viewer with thumbnail preview & caching
----
-
 # TG File Viewer
 
 > 单体 Telegram 频道文件预览服务 — 替代三服务架构，整合文件同步、预览、缩略图生成、缓存管理。
 
-[![Tests](https://img.shields.io/badge/tests-180/180%20PASS-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-265/265%20PASS-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -103,34 +92,33 @@ tg_file_viewer/
 │   └── cache_manager.py    # LRU 缓存管理器 (已实现 ✅)
 │
 ├── scripts/                # 启动脚本
-│   ├── dev.sh               # 开发模式一键启动 (前后端并行)
-│   └── start.sh             # 生产模式启动 (构建前端 + 后端 serve)
 │
-├── frontend/               # Vue 3 前端 (pnpm)
-│   ├── package.json         # Vue 3 + Vite + Tailwind + Axios
-│   ├── vite.config.js       # dev proxy /api → :8000
-│   ├── tailwind.config.js   # darkMode: 'class'
-│   └── src/
-│       ├── App.vue          # 侧边栏 + Header(健康/授权/暗色) + toast
-│       ├── router/index.js  # 8 条路由 (懒加载)
-│       ├── api/index.js     # 7 个 API 模块
-│       ├── composables/useDarkMode.js
-│       └── views/           # 8 个页面
+├── frontend/               # Vue 3 前端 (pnpm, 60 tests)
+│   ├── src/tests/          # 11 个测试文件 (Vitest)
+│   │   ├── setup.js        # 测试环境初始化
+│   │   ├── App.test.js     # App.vue 测试 (6)
+│   │   ├── AuthView.test.js     # (6)
+│   │   ├── DashboardView.test.js # (3)
+│   │   └── ... 共 11 文件
+│   └── ...
 │
-├── tests/                  # 测试
+├── tests/                  # 后端测试 (pytest, 205 tests)
 │   ├── conftest.py         # pytest fixtures
-│   ├── test_database.py    # DB 测试 (8)
-│   ├── test_config.py      # 配置测试 (10)
-│   ├── test_models.py      # 模型测试 (12)
-│   ├── test_telegram_client.py  # Telegram 客户端测试 (15)
-│   ├── test_auth_api.py    # 认证 API 测试 (9)
-│   ├── test_logging.py     # 日志系统测试 (13)
-│   ├── test_channels_api.py     # 频道 API 测试 (19)
-│   ├── test_files_api.py        # 文件 API 测试 (14)
-│   ├── test_sync_engine.py      # 同步引擎测试 (12)
-│   ├── test_sync_api.py         # 同步 API 测试 (12)
-│   ├── test_task_queue.py       # 任务队列测试 (11)
-│   ├── test_thumbnails_api.py   # 缩略图 API 测试 (13)
+│   ├── test_database.py    # 8
+│   ├── test_config.py      # 10
+│   ├── test_models.py      # 12
+│   ├── test_telegram_client.py  # 15
+│   ├── test_auth_api.py    # 9
+│   ├── test_logging.py     # 13
+│   ├── test_channels_api.py     # 19
+│   ├── test_files_api.py        # 14
+│   ├── test_sync_engine.py      # 12
+│   ├── test_sync_api.py         # 12
+│   ├── test_task_queue.py       # 17
+│   ├── test_thumbnails_api.py   # 13
+│   ├── test_config_api.py       # 12
+│   ├── test_cache_manager.py    # 12
+│   ├── test_post_sync_thumb.py  # 15
 │   └── test_data/          # 测试数据
 │
 ├── data/                   # 运行时数据
@@ -262,10 +250,8 @@ AppConfig  — key-value 动态配置
 | Step 6 | 缩略图任务队列 (PriorityQueue) | 24 | ✅ 已完成 |
 | Step 7 | 缓存管理器 (LRU, 动态上限) | 17 | ✅ 已完成 |
 | Step 8 | 配置管理 API (热更新) | 12 | ✅ 已完成 |
-| Step 9 | Vue 3 + Tailwind 前端 | 8 views | ✅ 已完成 |
+| Step 9 | Vue 3 + Tailwind 前端 (+ Vitest) | 60 | ✅ 已完成 |
 | Step 10 | Docker 多阶段构建 + HF Space 部署 | ~5 | ✅ 已完成 |
-
-**当前进度**: 10/10 步完成，180 个测试全部通过。
 
 ---
 
@@ -275,7 +261,7 @@ AppConfig  — key-value 动态配置
 
 - Python 3.11+
 - uv (Python 包管理)
-- pnpm (前端包管理) 或 npm
+- pnpm (前端包管理)
 - Telegram API 凭证 ([my.telegram.org](https://my.telegram.org))
 
 ### 安装
@@ -289,6 +275,9 @@ uv venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
+# 安装前端依赖
+cd frontend && pnpm install && cd ..
+
 # 配置环境变量
 cp .env.example .env
 # 编辑 .env，填入 TG_API_ID 和 TG_API_HASH
@@ -299,23 +288,22 @@ cp .env.example .env
 #### 开发模式（前后端热重载）
 
 ```bash
-# 一键启动：后端 (:8000) + 前端 Vite dev (:5173)
-# 自动清理端口残留、Ctrl+C 停止所有服务
-./scripts/dev.sh
+# 终端 1：启动后端
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
+# 终端 2：启动前端 Vite dev
+cd frontend && pnpm run dev
 # 前端访问: http://localhost:5173 (API 自动代理到 :8000)
 ```
 
-#### 生产模式（单端口 SPA）
+#### 生产模式
 
 ```bash
-# 构建前端 + 后端 serve 静态文件
-./scripts/start.sh
-
+# 构建前端 + 启动后端
+cd frontend && pnpm build && cd ..
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 # 访问: http://localhost:8000 (前后端一体化)
 ```
-
-> **说明**：脚本自动处理端口冲突清理。首次运行需确保 `uv` 和 `pnpm` 已安装。
 
 ### 认证
 
@@ -341,24 +329,35 @@ curl http://localhost:8000/api/auth/status
 
 ## 测试
 
+### 后端 (pytest)
+
 ```bash
-# 运行所有测试
+# 运行所有后端测试
 uv run pytest tests/ -v
 
-# 运行特定模块
+# 特定模块
 uv run pytest tests/test_auth_api.py -v
 
 # 带覆盖率报告
 uv run pytest tests/ --cov=. --cov-report=term
-
-# 当前测试统计
-# ✅ 151/151 PASS (Step 1-6)
 ```
 
-测试采用 **pytest + pytest-asyncio**，测试数据库与生产隔离：
-- session-scoped：一次建库
-- function-scoped：每个测试前后 drop/create 表
-- 测试数据目录：`tests/test_data/`（自动清理）
+### 前端 (Vitest)
+
+```bash
+# 在 frontend/ 目录下执行
+pnpm test                        # 运行全部前端测试
+pnpm run test:watch              # 监听模式
+pnpm exec vitest src/tests/AuthView.test.js  # 单文件测试
+```
+
+### 测试架构
+
+- **后端**: pytest + pytest-asyncio，测试数据库与生产隔离
+  - session-scoped：一次建库
+  - function-scoped：每个测试前后 drop/create 表
+- **前端**: Vitest + @vue/test-utils + happy-dom
+  - API 层通过 `vi.hoisted()` + `vi.mock()` 注入 Mock
 
 ---
 
@@ -374,6 +373,21 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 > 注意：必须使用 `uv run` 启动以确保虚拟环境和依赖正确加载。启动时自动初始化数据库（`data/db.sqlite`），所有表由 `models.py` 注册。
 
 ### Docker
+
+#### docker-compose (推荐)
+
+```bash
+# 确保 .env 已配置 TG_API_ID 和 TG_API_HASH
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止
+docker-compose down
+```
+
+#### 手动构建
 
 ```bash
 # 构建镜像
@@ -396,7 +410,7 @@ docker logs -f tg-file-viewer
 - **Stage 1**：`node:20-alpine` 构建 Vue 3 前端（`pnpm build → dist/`）
 - **Stage 2**：`python:3.11-slim` 运行 FastAPI 后端，安装 `uv` 同步依赖
 - 前端 `dist/` 复制到后端容器，由 FastAPI `StaticFiles` 统一 serve
-- 数据目录 `/data` 可挂载为持久化存储
+- 数据目录 `./data` 映射到容器 `/data`，持久化数据库、缓存、日志
 
 ### Hugging Face Space
 
@@ -423,27 +437,6 @@ git push
 | `TG_ADMIN_PASSWORD` | (可选) 管理密码 |
 
 **持久化存储**：Space Settings → Persistent Storage → 挂载到 `/data`
-
----
-
-## 开发规则
-
-1. **TDD 模式**：先写测试 🔴 → 最小实现 🟢 → 重构 🔧
-2. **测试必须通过**：每步完成后全量测试 100% 通过
-3. **记录开发日志**：更新 `CHANGELOG.md`
-4. **Git 提交**：使用 `feat(step-N):` 格式，标注测试结果
-5. **异步优先**：数据库、HTTP、文件操作全部使用 asyncio
-6. **DB 配置优先**：运行时配置优先从 `app_config` 表读取
-
-### Commit 格式
-
-```
-feat(step-N): description ✅ N/N PASS
-
-细分变更说明
-
-Tests: N/N PASS
-```
 
 ---
 

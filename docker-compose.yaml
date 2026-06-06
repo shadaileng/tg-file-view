@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    container_name: tg-file-viewer
+    ports:
+      - "7860:7860"
+    env_file:
+      - .env
+    environment:
+      - TG_PORT=7860
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
