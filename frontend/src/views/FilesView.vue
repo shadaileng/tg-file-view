@@ -435,8 +435,8 @@ async function handleCache(file) {
   if (processingFiles.value.has(file.id)) return
   processingFiles.value.add(file.id)
   try {
-    await filesApi.cache(file.id)
-    file.is_cached = true
+    const { data } = await filesApi.cache(file.id)
+    file.is_cached = data.is_cached
   } catch {
     // handled by interceptor
   } finally {
