@@ -1,5 +1,18 @@
 # 开发日志 (CHANGELOG)
 
+## fix: handleCache 以服务端 is_cached 为准，不硬编码 true
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/views/FilesView.vue` | `handleCache` 改为 `const { data } = await filesApi.cache(...)` + `file.is_cached = data.is_cached` |
+| `frontend/src/tests/FilesView.test.js` | mock 返回 `{ data: { is_cached } }` 形状，新增「状态以服务端为准」测试 |
+
+### 测试统计: 73/73 PASS ✅ (前端) + 208/209 PASS ✅ (后端)
+
+---
+
 ## fix: 中文文件名缓存路径 + 按钮防重复点击
 
 ### 变更

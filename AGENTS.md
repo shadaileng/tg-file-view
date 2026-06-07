@@ -195,10 +195,14 @@ test/<desc>     # 测试补充 → test/integration-coverage
 - [ ] 开发日志已记录
 
 #### 5.2.3 合并确认
+> **⚠️ 强制规则：必须先使用 `question` 工具获取用户明确肯定答复后，方可执行 `git merge --no-ff`。
+> 违反此规则属于严重违规。**
+
 1. 确认检查清单全部 ✔
-2. 一句话说明变更内容
-3. **等待用户确认**后执行合并
+2. 用 `question` 工具向用户提问「确认合并到 main？」
+3. 收到用户明确肯定答复后执行合并
 4. 使用 `git merge --no-ff` 保留分支历史
+5. 合并后更新 `CHANGELOG.md` 记录测试统计
 
 **禁止**：`--no-edit` 自动合并、未确认 push main、force push main
 
