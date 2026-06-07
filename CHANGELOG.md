@@ -1,15 +1,15 @@
 # 开发日志 (CHANGELOG)
 
-## feat: 缩略图居中显示 (object-center)
+## feat: 缩略图 object-contain 完整显示
 
 ### 问题
-文件浏览卡片中缩略图裁剪区域缺少显式 `object-position`，导致图片在容器内可能偏移。
+`object-cover` 对竖屏图片（如 1080×1936）上下大量裁切，只显示中间一小部分。
 
 ### 变更
 
 | 文件 | 变更 |
 |------|------|
-| `frontend/src/views/FilesView.vue:69` | img class 追加 `object-center`（→ `object-position: center`） |
+| `frontend/src/views/FilesView.vue:69` | `object-cover` → `object-contain`，保持原始比例完整显示图片，横竖屏均在容器内居中 |
 
 ### 测试统计: 60/60 PASS ✅ (前端)
 
