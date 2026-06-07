@@ -14,6 +14,7 @@ from api.files import (
     cache_file,
     delete_cache,
     _file_to_dict,
+    _safe_filename,
     CACHE_DIR,
 )
 from models import Channel as ChannelModel, File as FileModel
@@ -492,3 +493,30 @@ async def test_view_uncached_unauthorized(db_session):
     with pytest.raises(HTTPException) as exc:
         await view_file(file_id=f.id, db=db_session)
     assert exc.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# S20 — Unit: _safe_filename preserves Chinese chars
+# ---------------------------------------------------------------------------
+async def test_safe_filename_preserves_chinese():
+    """GIVEN filename with Chinese chars WHEN sanitized THEN chars preserved."""
+    result = _safe_filename("2024_年终总结.pdf")
+    assert result == "2024_年终总结.pdf"
+
+
+async def test_safe_filename_replaces_windows_illegal():
+    """GIVEN filename with Windows-illegal chars WHEN sanitized THEN replaced."""
+    result = _safe_filename('a<b>c:"d|e/f\\g*h?')
+    assert result == "a_b_c__d_e_f_g_h_"
+
+
+async def test_safe_filename_preserves_normal():
+    """GIVEN normal ASCII filename WHEN sanitized THEN unchanged."""
+    result = _safe_filename("photo_2024-01.jpg")
+    assert result == "photo_2024-01.jpg"
+
+
+async def test_safe_filename_handles_spaces():
+    """GIVEN filename with spaces WHEN sanitized THEN spaces preserved."""
+    result = _safe_filename("my report (1).txt")
+    assert result == "my report (1).txt"

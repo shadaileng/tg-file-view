@@ -138,29 +138,35 @@
             <button
               @click="handleCache(file)"
               v-if="!file.is_cached"
+              :disabled="processingFiles.has(file.id)"
               class="flex-1 px-2 py-1.5 text-xs bg-green-50 dark:bg-green-900/20
-                     text-green-600 dark:text-green-400 rounded hover:bg-green-100 dark:hover:bg-green-900/30
+                     text-green-600 dark:text-green-400 rounded
                      transition-colors"
+              :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'"
             >
-              缓存
+              {{ processingFiles.has(file.id) ? '缓存中...' : '缓存' }}
             </button>
             <button
               @click="handleDeleteCache(file)"
               v-if="file.is_cached"
+              :disabled="processingFiles.has(file.id)"
               class="flex-1 px-2 py-1.5 text-xs bg-red-50 dark:bg-red-900/20
-                     text-red-600 dark:text-red-400 rounded hover:bg-red-100 dark:hover:bg-red-900/30
+                     text-red-600 dark:text-red-400 rounded
                      transition-colors"
+              :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-100 dark:hover:bg-red-900/30'"
             >
-              清缓存
+              {{ processingFiles.has(file.id) ? '清缓存中...' : '清缓存' }}
             </button>
             <button
               @click="handleGenerateThumb(file)"
               v-if="!file.thumb_path"
+              :disabled="processingFiles.has(file.id)"
               class="flex-1 px-2 py-1.5 text-xs bg-amber-50 dark:bg-amber-900/20
-                     text-amber-600 dark:text-amber-400 rounded hover:bg-amber-100 dark:hover:bg-amber-900/30
+                     text-amber-600 dark:text-amber-400 rounded
                      transition-colors"
+              :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-100 dark:hover:bg-amber-900/30'"
             >
-              缩略图
+              {{ processingFiles.has(file.id) ? '生成中...' : '缩略图' }}
             </button>
           </div>
         </div>
@@ -295,6 +301,7 @@ const filesLoading = ref(false)
 const loadingMore = ref(false)
 const pageInput = ref(1)
 const sentinelEl = ref(null)
+const processingFiles = ref(new Set())
 
 let observer = null
 
@@ -425,24 +432,34 @@ async function handleDownload(file) {
 }
 
 async function handleCache(file) {
+  if (processingFiles.value.has(file.id)) return
+  processingFiles.value.add(file.id)
   try {
     await filesApi.cache(file.id)
     file.is_cached = true
   } catch {
     // handled by interceptor
+  } finally {
+    processingFiles.value.delete(file.id)
   }
 }
 
 async function handleDeleteCache(file) {
+  if (processingFiles.value.has(file.id)) return
+  processingFiles.value.add(file.id)
   try {
     await filesApi.deleteCache(file.id)
     file.is_cached = false
   } catch {
     // handled by interceptor
+  } finally {
+    processingFiles.value.delete(file.id)
   }
 }
 
 async function handleGenerateThumb(file) {
+  if (processingFiles.value.has(file.id)) return
+  processingFiles.value.add(file.id)
   try {
     await thumbnailsApi.generateSingle(file.id)
     window.dispatchEvent(new CustomEvent('app-toast', {
@@ -450,6 +467,8 @@ async function handleGenerateThumb(file) {
     }))
   } catch {
     // handled by interceptor
+  } finally {
+    processingFiles.value.delete(file.id)
   }
 }
 

@@ -6,9 +6,12 @@ import FilesView from '../views/FilesView.vue'
 const mockChannelsList = vi.hoisted(() => vi.fn())
 const mockFilesList = vi.hoisted(() => vi.fn())
 
+const mockCache = vi.hoisted(() => vi.fn())
+const mockDeleteCache = vi.hoisted(() => vi.fn())
+
 vi.mock('../api/index', () => ({
   channelsApi: { list: mockChannelsList },
-  filesApi: { list: mockFilesList },
+  filesApi: { list: mockFilesList, cache: mockCache, deleteCache: mockDeleteCache },
   thumbnailsApi: { generateSingle: vi.fn() },
 }))
 
@@ -236,5 +239,65 @@ describe('FilesView', () => {
     await flushPromises()
     // Teleport renders outside wrapper, check document.body
     expect(document.body.innerHTML).toContain('/api/files/42/view')
+  })
+
+  it('缓存按钮点击后显示缓存中并禁用', async () => {
+    mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
+    mockFilesList.mockResolvedValue({
+      data: {
+        files: [{ id: 5, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false }],
+        total: 1,
+      },
+    })
+    const wrapper = mount(FilesView, { global: { plugins: [router] } })
+    await flushPromises()
+    const chBtns = wrapper.findAll('button').filter(b => b.text().includes('Ch1'))
+    await chBtns[0].trigger('click')
+    await flushPromises()
+
+    const cacheBtn = wrapper.findAll('button').filter(b => b.text().trim() === '缓存')
+    expect(cacheBtn[0].attributes('disabled')).toBeUndefined()
+
+    // Click cache, verify button is disabled and text changes
+    let resolveCache
+    mockCache.mockReturnValue(new Promise((r) => { resolveCache = r }))
+    await cacheBtn[0].trigger('click')
+    await flushPromises()
+
+    const disabledBtn = wrapper.findAll('button').filter(b => b.text().trim() === '缓存中...')
+    expect(disabledBtn.length).toBeGreaterThan(0)
+    expect(disabledBtn[0].attributes('disabled')).toBeDefined()
+
+    // Resolve and verify
+    resolveCache()
+    await flushPromises()
+    expect(mockCache).toHaveBeenCalledWith(5)
+  })
+
+  it('清缓存按钮点击后显示清缓存中', async () => {
+    mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
+    mockFilesList.mockResolvedValue({
+      data: {
+        files: [{ id: 6, file_name: 'test2.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: true }],
+        total: 1,
+      },
+    })
+    const wrapper = mount(FilesView, { global: { plugins: [router] } })
+    await flushPromises()
+    const chBtns = wrapper.findAll('button').filter(b => b.text().includes('Ch1'))
+    await chBtns[0].trigger('click')
+    await flushPromises()
+
+    let resolveDelete
+    mockDeleteCache.mockReturnValue(new Promise((r) => { resolveDelete = r }))
+    const delBtn = wrapper.findAll('button').filter(b => b.text().trim() === '清缓存')
+    await delBtn[0].trigger('click')
+    await flushPromises()
+
+    const disabledDel = wrapper.findAll('button').filter(b => b.text().trim() === '清缓存中...')
+    expect(disabledDel.length).toBeGreaterThan(0)
+    resolveDelete()
+    await flushPromises()
+    expect(mockDeleteCache).toHaveBeenCalledWith(6)
   })
 })

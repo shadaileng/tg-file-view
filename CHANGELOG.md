@@ -1,5 +1,20 @@
 # 开发日志 (CHANGELOG)
 
+## fix: 中文文件名缓存路径 + 按钮防重复点击
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `api/files.py` | `_safe_filename` 正则从 `[^a-zA-Z0-9._-]` 改为 `[\\/:*?"<>|\x00-\x1f]`，保留中文 |
+| `frontend/src/views/FilesView.vue` | 缓存/清缓存/缩略图按钮增加 loading 状态，防重复点击 |
+| `tests/test_files_api.py` | 新增 `_safe_filename` 测试用例 |
+| `frontend/src/tests/FilesView.test.js` | 新增缓存按钮 loading 测试 |
+
+### 测试统计: 72/72 PASS ✅ (前端) + 208/209 PASS ✅ (后端)
+
+---
+
 ## feat: 文件浏览无限滚动 + 跳页 + 流式预览 🔄
 
 ### 变更
