@@ -340,7 +340,15 @@ class CacheManager:
         Returns True if record existed and was deleted.
         Returns False if record not found (idempotent).
         """
-        rec = await db.get(CacheRecordModel, record_id)
+        from sqlalchemy.orm import joinedload
+
+        stmt = (
+            select(CacheRecordModel)
+            .where(CacheRecordModel.id == record_id)
+            .options(joinedload(CacheRecordModel.file))
+        )
+        result = await db.execute(stmt)
+        rec = result.unique().scalar_one_or_none()
         if rec is None:
             return False
 
