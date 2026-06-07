@@ -1,5 +1,25 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 文件浏览无限滚动 + 跳页 + 流式预览 🔄
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/views/FilesView.vue` | 翻页 → 无限滚动 + 页码跳转 + 流式预览 |
+| `frontend/src/tests/FilesView.test.js` | 新增 10 个测试用例 |
+| `AGENTS.md` | 新增场景登记表 |
+
+### 关键设计
+
+- **混合模式**：底部无限滚动追加加载，顶部页码输入框精确跳转
+- **流式预览**：预览模态框去掉 blob 预下载，直接使用 `/api/files/{id}/view` URL，浏览器渐进渲染
+- **后端零改动**：所有变更收敛在前端
+
+### 测试统计: 70/70 PASS ✅ (前端) + 204/205 PASS ✅ (后端, 1个 Windows GBK 编码预存问题)
+
+---
+
 ## feat: 缩略图 object-contain 完整显示
 
 ### 问题

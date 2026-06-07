@@ -372,7 +372,26 @@ it('测试示例', async () => {
 
 ---
 
-## 9. 快速命令参考
+## 9. 场景登记表
+
+### S — 文件浏览无限滚动 + 混合翻页 + 流式预览
+
+| # | 类型 | GIVEN | WHEN | THEN |
+|---|------|-------|------|------|
+| A1 | 正常流程 | 频道有 120 个文件，limit=50 | 用户滚动到底部 | 追加加载下一批（offset+=50），files 追加，页码不变 |
+| A2 | 正常流程 | 文件已加载部分 | 用户输入页码 "3" 后按 Enter | offset=100，替换模式加载，滚动到顶部 |
+| A3 | 边界条件 | totalFiles ≤ limit | 页面加载完成 | 不显示分页控件，不显示 sentinel |
+| A4 | 边界条件 | 正在 loadingMore | 再次滚动到底部 | 忽略，不重复请求 |
+| A5 | 边界条件 | files.length >= totalFiles | 滚动到底部 | 不触发加载，显示「已加载全部」 |
+| A6 | 边界条件 | 切换频道 | 点击另一个频道按钮 | offset=0，files 替换，页码归 1 |
+| A7 | 异常流程 | 网络错误 | loadMore 失败 | 保留已加载文件，loadingMore 重置，可重试 |
+| B1 | 正常流程 | 用户点击图片文件 | 调用 handleView | preview.url = `/api/files/{id}/view`，浏览器渐进渲染 |
+| B2 | 正常流程 | 用户点击视频文件 | 调用 handleView | preview.type = 'video'，`<video src="...">` 边下边播 |
+| B3 | 异常流程 | 图片加载 404 | img.onerror | preview.error 显示错误信息 |
+
+---
+
+## 10. 快速命令参考
 
 ```bash
 # ── 后端 ──
