@@ -44,10 +44,30 @@
     </div>
 
     <div v-else class="space-y-4">
-      <!-- File count info -->
-      <p class="text-sm text-gray-400">
-        共 {{ totalFiles }} 个文件，当前第 {{ offset / limit + 1 }} 页
-      </p>
+      <!-- File count + pagination controls -->
+      <div class="flex items-center justify-between">
+        <p class="text-sm text-gray-400">共 {{ totalFiles }} 个文件</p>
+        <div v-if="totalFiles > limit" class="flex items-center gap-2">
+          <button
+            @click="goToPage(currentPage - 1)"
+            :disabled="currentPage <= 1"
+            class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600
+                   text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >上一页</button>
+          <span class="text-sm text-gray-500 dark:text-gray-400">
+            第 <input v-model.number="pageInput" type="number" :min="1" :max="totalPages"
+              @keyup.enter="jumpToPage" @blur="jumpToPage"
+              class="w-16 text-center border border-gray-300 dark:border-gray-600 rounded px-1 py-0.5
+                     bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 text-sm" /> / {{ totalPages }} 页
+          </span>
+          <button
+            @click="goToPage(currentPage + 1)"
+            :disabled="currentPage >= totalPages"
+            class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600
+                   text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
+          >下一页</button>
+        </div>
+      </div>
 
       <!-- Card grid -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -146,27 +166,18 @@
         </div>
       </div>
 
-      <!-- Pagination -->
-      <div v-if="totalFiles > limit" class="flex items-center justify-center gap-2 py-4">
-        <button
-          @click="changePage(-1)"
-          :disabled="offset === 0"
-          class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600
-                 text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
-        >
-          上一页
-        </button>
-        <span class="text-sm text-gray-500 dark:text-gray-400">
-          {{ Math.floor(offset / limit) + 1 }} / {{ Math.ceil(totalFiles / limit) }}
-        </span>
-        <button
-          @click="changePage(1)"
-          :disabled="offset + limit >= totalFiles"
-          class="px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600
-                 text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
-        >
-          下一页
-        </button>
+      <!-- Infinite scroll sentinel -->
+      <div ref="sentinelEl" class="h-4"></div>
+
+      <!-- Loading more indicator -->
+      <div v-if="loadingMore" class="text-center text-gray-400 py-4">
+        <div class="inline-block w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-sm mt-1">加载更多...</p>
+      </div>
+
+      <!-- All loaded -->
+      <div v-else-if="files.length >= totalFiles && totalFiles > 0" class="text-center text-gray-400 text-sm py-4">
+        已加载全部 {{ totalFiles }} 个文件
       </div>
     </div>
 
@@ -195,14 +206,8 @@
 
           <!-- Body -->
           <div class="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[200px]">
-            <!-- Loading -->
-            <div v-if="preview.loading" class="text-center text-gray-400 py-8">
-              <div class="inline-block w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
-              <p class="text-sm">加载中...</p>
-            </div>
-
             <!-- Error -->
-            <div v-else-if="preview.error" class="text-center py-8">
+            <div v-if="preview.error" class="text-center py-8">
               <p class="text-red-500 text-sm">{{ preview.error }}</p>
               <button
                 @click="closePreview"
@@ -216,6 +221,7 @@
               :src="preview.url"
               :alt="preview.file?.file_name"
               class="max-w-full max-h-[75vh] object-contain rounded"
+              @error="preview.error = '图片加载失败'"
             />
 
             <!-- Video -->
@@ -224,6 +230,7 @@
               :src="preview.url"
               controls
               class="max-w-full max-h-[75vh] rounded"
+              @error="preview.error = '视频加载失败'"
             ></video>
 
             <!-- Audio -->
@@ -232,10 +239,11 @@
               :src="preview.url"
               controls
               class="w-full"
+              @error="preview.error = '音频加载失败'"
             ></audio>
 
             <!-- Unsupported fallback -->
-            <div v-else-if="preview.url" class="text-center py-8 space-y-3">
+            <div v-else class="text-center py-8 space-y-3">
               <p class="text-gray-400 dark:text-gray-500 text-sm">该文件类型不支持浏览器内预览</p>
               <div class="space-y-1 text-xs text-gray-400 dark:text-gray-500">
                 <p>文件名：{{ preview.file?.file_name }}</p>
@@ -250,7 +258,7 @@
           </div>
 
           <!-- Footer -->
-          <div v-if="preview.file && !preview.loading && !preview.error" class="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
+          <div v-if="preview.file && !preview.error" class="px-4 py-2 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
             <span class="text-xs text-gray-400">
               {{ formatSize(preview.file.file_size) }} · {{ preview.file.mime_type }}
             </span>
@@ -272,7 +280,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { channelsApi, filesApi, thumbnailsApi } from '../api/index'
 
@@ -284,12 +292,19 @@ const totalFiles = ref(0)
 const offset = ref(0)
 const limit = ref(50)
 const filesLoading = ref(false)
+const loadingMore = ref(false)
+const pageInput = ref(1)
+const sentinelEl = ref(null)
+
+let observer = null
+
+const currentPage = computed(() => Math.floor(offset.value / limit.value) + 1)
+const totalPages = computed(() => Math.ceil(totalFiles.value / limit.value))
 
 const preview = reactive({
   visible: false,
-  loading: false,
   error: '',
-  type: '',       // 'image' | 'video' | 'audio' | 'unsupported'
+  type: '',
   url: '',
   file: null,
 })
@@ -308,21 +323,70 @@ function formatSize(bytes) {
 
 function fileIcon(type) {
   const icons = {
-    photo: '\u{1F5BC}',    // 🖼
-    video: '\u{1F3AC}',    // 🎬
-    document: '\u{1F4C4}', // 📄
-    audio: '\u{1F3B5}',    // 🎵
-    sticker: '\u{1F3A8}',  // 🎨
-    gif: '\u{1F3A5}',      // 🎥
+    photo: '\u{1F5BC}',
+    video: '\u{1F3AC}',
+    document: '\u{1F4C4}',
+    audio: '\u{1F3B5}',
+    sticker: '\u{1F3A8}',
+    gif: '\u{1F3A5}',
   }
-  return icons[type] || '\u{1F4CE}' // 📎
+  return icons[type] || '\u{1F4CE}'
+}
+
+async function loadFiles(append = false) {
+  if (!selectedChannelId.value) return
+  if (append) {
+    loadingMore.value = true
+  } else {
+    filesLoading.value = true
+  }
+  try {
+    const { data } = await filesApi.list(selectedChannelId.value, {
+      offset: offset.value,
+      limit: limit.value,
+    })
+    if (append) {
+      files.value = [...files.value, ...data.files]
+    } else {
+      files.value = data.files
+      pageInput.value = currentPage.value
+    }
+    totalFiles.value = data.total
+  } catch {
+    if (!append) files.value = []
+  } finally {
+    filesLoading.value = false
+    loadingMore.value = false
+  }
+}
+
+function loadMore() {
+  if (loadingMore.value || filesLoading.value) return
+  if (files.value.length >= totalFiles.value) return
+  offset.value += limit.value
+  loadFiles(true)
+}
+
+function jumpToPage() {
+  let p = pageInput.value
+  if (isNaN(p) || p < 1) p = 1
+  else if (p > totalPages.value) p = totalPages.value
+  goToPage(p)
+}
+
+function goToPage(page) {
+  if (page < 1 || page > totalPages.value) return
+  if (!selectedChannelId.value) return
+  offset.value = (page - 1) * limit.value
+  pageInput.value = page
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+  loadFiles(false)
 }
 
 async function loadChannels() {
   try {
     const { data } = await channelsApi.list()
     channels.value = data
-    // Auto-select from query param
     const chParam = route.query.channel
     if (chParam) {
       const id = parseInt(chParam, 10)
@@ -338,31 +402,10 @@ async function loadChannels() {
 async function selectChannel(ch) {
   selectedChannelId.value = ch.id
   offset.value = 0
-  await loadFiles()
-}
-
-async function loadFiles() {
-  if (!selectedChannelId.value) return
-  filesLoading.value = true
-  try {
-    const { data } = await filesApi.list(selectedChannelId.value, {
-      offset: offset.value,
-      limit: limit.value,
-    })
-    files.value = data.files
-    totalFiles.value = data.total
-  } catch {
-    files.value = []
-  } finally {
-    filesLoading.value = false
-  }
-}
-
-function changePage(dir) {
-  const newOffset = offset.value + dir * limit.value
-  if (newOffset < 0 || newOffset >= totalFiles.value) return
-  offset.value = newOffset
-  loadFiles()
+  files.value = []
+  pageInput.value = 1
+  window.scrollTo({ top: 0 })
+  await loadFiles(false)
 }
 
 async function handleDownload(file) {
@@ -402,7 +445,6 @@ async function handleDeleteCache(file) {
 async function handleGenerateThumb(file) {
   try {
     await thumbnailsApi.generateSingle(file.id)
-    // Show a brief toast
     window.dispatchEvent(new CustomEvent('app-toast', {
       detail: { type: 'success', message: '缩略图任务已创建: ' + file.file_name },
     }))
@@ -411,16 +453,13 @@ async function handleGenerateThumb(file) {
   }
 }
 
-async function handleView(file) {
+function handleView(file) {
   preview.visible = true
-  preview.loading = true
   preview.error = ''
-  preview.url = ''
   preview.file = file
 
-  // Determine preview type from mime_type
   const mime = file.mime_type || ''
-  if (mime.startsWith('image/') || mime.startsWith('application/pdf')) {
+  if (mime.startsWith('image/') || mime === 'application/pdf') {
     preview.type = 'image'
   } else if (mime.startsWith('video/')) {
     preview.type = 'video'
@@ -428,35 +467,39 @@ async function handleView(file) {
     preview.type = 'audio'
   } else {
     preview.type = 'unsupported'
+    return
   }
 
-  try {
-    const response = await filesApi.view(file.id)
-    const blob = response.data
-    // Revoke old URL if any
-    if (preview.url && preview.url.startsWith('blob:')) {
-      URL.revokeObjectURL(preview.url)
-    }
-    preview.url = URL.createObjectURL(blob)
-    preview.loading = false
-  } catch (err) {
-    const detail = err?.response?.data?.detail || err?.message || '未知错误'
-    preview.error = `加载失败：${detail}`
-    preview.loading = false
-  }
+  preview.url = `/api/files/${file.id}/view`
 }
 
 function closePreview() {
-  if (preview.url && preview.url.startsWith('blob:')) {
-    URL.revokeObjectURL(preview.url)
-  }
   preview.visible = false
-  preview.loading = false
   preview.error = ''
   preview.type = ''
   preview.url = ''
   preview.file = null
 }
 
-onMounted(loadChannels)
+onMounted(() => {
+  loadChannels()
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting) {
+        loadMore()
+      }
+    },
+    { rootMargin: '200px' }
+  )
+})
+
+watch(sentinelEl, (el) => {
+  if (el && observer) {
+    observer.observe(el)
+  }
+})
+
+onUnmounted(() => {
+  if (observer) observer.disconnect()
+})
 </script>
