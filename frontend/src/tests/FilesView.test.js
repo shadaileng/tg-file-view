@@ -268,8 +268,8 @@ describe('FilesView', () => {
     expect(disabledBtn.length).toBeGreaterThan(0)
     expect(disabledBtn[0].attributes('disabled')).toBeDefined()
 
-    // Resolve and verify
-    resolveCache()
+    // Resolve — return proper backend response shape { data: { is_cached: true } }
+    resolveCache({ data: { is_cached: true } })
     await flushPromises()
     expect(mockCache).toHaveBeenCalledWith(5)
   })
@@ -296,8 +296,32 @@ describe('FilesView', () => {
 
     const disabledDel = wrapper.findAll('button').filter(b => b.text().trim() === '清缓存中...')
     expect(disabledDel.length).toBeGreaterThan(0)
-    resolveDelete()
+    resolveDelete({ data: { status: 'ok' } })
     await flushPromises()
     expect(mockDeleteCache).toHaveBeenCalledWith(6)
+  })
+
+  it('缓存状态以服务端返回为准（非硬编码）', async () => {
+    mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
+    mockFilesList.mockResolvedValue({
+      data: {
+        files: [{ id: 7, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false }],
+        total: 1,
+      },
+    })
+    const wrapper = mount(FilesView, { global: { plugins: [router] } })
+    await flushPromises()
+    const chBtns = wrapper.findAll('button').filter(b => b.text().includes('Ch1'))
+    await chBtns[0].trigger('click')
+    await flushPromises()
+
+    // Server returns is_cached=false (e.g., post-eviction)
+    mockCache.mockResolvedValue({ data: { is_cached: false } })
+    const cacheBtn = wrapper.findAll('button').filter(b => b.text().trim() === '缓存')
+    await cacheBtn[0].trigger('click')
+    await flushPromises()
+
+    // After resolve, file should still show as not cached
+    expect(wrapper.text()).not.toContain('已缓存')
   })
 })
