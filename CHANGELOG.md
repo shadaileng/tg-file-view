@@ -1,5 +1,18 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 缩略图居中显示 (object-center)
+
+### 问题
+文件浏览卡片中缩略图裁剪区域缺少显式 `object-position`，导致图片在容器内可能偏移。
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/views/FilesView.vue:69` | img class 追加 `object-center`（→ `object-position: center`） |
+
+### 测试统计: 60/60 PASS ✅ (前端)
+
 ## feat: 前端 Vitest 测试套件 (60 tests)
 
 ### 问题
