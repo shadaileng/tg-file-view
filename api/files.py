@@ -24,13 +24,14 @@ router = APIRouter(tags=["files"])
 DATA_DIR = os.environ.get("TG_DATA_DIR", "./data")
 CACHE_DIR = Path(DATA_DIR) / "cache"
 
-# Safe filename: replace anything not alphanumeric, dot, dash, underscore with '_'
-_SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9._-]")
+# Safe filename: replace only Windows-illegal filename characters with '_'
+# Preserves Chinese, spaces, parentheses, and other Unicode characters.
+_INVALID_FS_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 def _safe_filename(name: str) -> str:
-    """Sanitize filename, replacing unsafe characters."""
-    return _SAFE_NAME_PATTERN.sub("_", name)
+    """Sanitize filename, replacing only filesystem-illegal characters."""
+    return _INVALID_FS_CHARS.sub("_", name)
 
 
 def _make_content_disposition(filename: str, disposition: str = "inline") -> str:
