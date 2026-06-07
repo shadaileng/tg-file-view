@@ -1,5 +1,18 @@
 # 开发日志 (CHANGELOG)
 
+## feat: 缩略图 object-contain 完整显示
+
+### 问题
+`object-cover` 对竖屏图片（如 1080×1936）上下大量裁切，只显示中间一小部分。
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `frontend/src/views/FilesView.vue:69` | `object-cover` → `object-contain`，保持原始比例完整显示图片，横竖屏均在容器内居中 |
+
+### 测试统计: 60/60 PASS ✅ (前端)
+
 ## feat: 前端 Vitest 测试套件 (60 tests)
 
 ### 问题

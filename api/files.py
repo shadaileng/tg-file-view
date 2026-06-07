@@ -105,7 +105,9 @@ async def _download_from_telegram(
     try:
         message = await client.get_messages(entity, ids=message_id)
     except Exception as e:
-        logger.error("Failed to get message tg_id={} msg_id={}: {}", tg_id, message_id, e)
+        logger.error(
+            "Failed to get message tg_id={} msg_id={}: {}", tg_id, message_id, e
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch message from Telegram: {e}",
@@ -140,9 +142,7 @@ def _file_stream(file_path: Path, chunk_size: int = 64 * 1024):
             yield chunk
 
 
-async def _ensure_cached(
-    file_: FileModel, db: AsyncSession
-) -> Path:
+async def _ensure_cached(file_: FileModel, db: AsyncSession) -> Path:
     """Ensure the file is cached locally. Downloads from Telegram if needed.
 
     Integrates with CacheManager for LRU eviction and dynamic size limits:
@@ -219,9 +219,7 @@ async def list_files(
         )
 
     # Total count
-    count_q = select(func.count(FileModel.id)).where(
-        FileModel.channel_id == channel_id
-    )
+    count_q = select(func.count(FileModel.id)).where(FileModel.channel_id == channel_id)
     total = (await db.execute(count_q)).scalar()
 
     # Paginated query — newest first by message_id
@@ -271,8 +269,10 @@ async def download_file(file_id: int, db: AsyncSession = Depends(get_db)):
         _file_stream(full_path),
         media_type=file_.mime_type,
         headers={
-            "Content-Disposition": _make_content_disposition(file_.file_name, "attachment"),
-            "Content-Length": str(file_.file_size),
+            "Content-Disposition": _make_content_disposition(
+                file_.file_name, "attachment"
+            ),
+            "Content-Length": str(full_path.stat().st_size),
         },
     )
 
@@ -299,7 +299,10 @@ async def cache_file(file_id: int, db: AsyncSession = Depends(get_db)):
     # Download and cache
     full_path = await _ensure_cached(file_, db)
     logger.info(
-        "File cached: id={} path={} size={}", file_.id, file_.cache_path, file_.file_size
+        "File cached: id={} path={} size={}",
+        file_.id,
+        file_.cache_path,
+        file_.file_size,
     )
     return _file_to_dict(file_)
 
@@ -351,8 +354,10 @@ async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
                 _file_stream(full_path),
                 media_type=file_.mime_type,
                 headers={
-                    "Content-Disposition": _make_content_disposition(file_.file_name, "inline"),
-                    "Content-Length": str(file_.file_size),
+                    "Content-Disposition": _make_content_disposition(
+                        file_.file_name, "inline"
+                    ),
+                    "Content-Length": str(full_path.stat().st_size),
                 },
             )
 
@@ -376,7 +381,12 @@ async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
     try:
         message = await client.get_messages(entity, ids=file_.message_id)
     except Exception as e:
-        logger.error("Failed to get message tg_id={} msg_id={}: {}", channel.tg_id, file_.message_id, e)
+        logger.error(
+            "Failed to get message tg_id={} msg_id={}: {}",
+            channel.tg_id,
+            file_.message_id,
+            e,
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Failed to fetch message from Telegram: {e}",
@@ -392,9 +402,6 @@ async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
     headers = {
         "Content-Disposition": _make_content_disposition(file_.file_name, "inline"),
     }
-    # Set Content-Length if known (helps browser show progress and detect truncated streams)
-    if file_.file_size > 0:
-        headers["Content-Length"] = str(file_.file_size)
 
     return StreamingResponse(
         _stream_from_telegram(svc, message.media),
