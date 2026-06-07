@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select, func
 
-from models import Channel as ChannelModel, File as FileModel, AppConfig
+from models import Channel as ChannelModel, File as FileModel, AppConfig, CacheRecord as CacheRecordModel
 from services.cache_manager import CacheManager
 from services.telegram_client import (
     get_telegram_service,
@@ -659,3 +659,150 @@ async def test_no_eviction_when_under_limit(db_session):
     # File should still be cached
     f = await db_session.get(FileModel, 1)
     assert f.is_cached is True
+
+
+# ---------------------------------------------------------------------------
+# CacheRecord CRUD tests (Step — CacheRecord table)
+# ---------------------------------------------------------------------------
+
+async def test_create_cache_record(db_session):
+    """GIVEN a cached file WHEN create_record THEN CacheRecord created with status='cached'."""
+    ch = await _create_channel(db_session)
+    cache_path = f"{ch.id}/1_test.dat"
+    await _touch_cache_file(cache_path, 1024)
+    f = await _create_file(db_session, ch.id, is_cached=True, cache_path=cache_path, file_size=1024)
+
+    rec = await CacheManager.create_record(db_session, f)
+
+    assert rec.file_id == f.id
+    assert rec.file_path == cache_path
+    assert rec.file_size == 1024
+    assert rec.status == "cached"
+    assert rec.error_msg is None
+    assert rec.cached_at is not None
+    assert rec.accessed_at is not None
+
+
+async def test_create_cache_record_idempotent(db_session):
+    """GIVEN an existing CacheRecord WHEN create_record again THEN updates."""
+    ch = await _create_channel(db_session)
+    cache_path = f"{ch.id}/1_test.dat"
+    await _touch_cache_file(cache_path, 1024)
+    f = await _create_file(db_session, ch.id, is_cached=True, cache_path=cache_path, file_size=1024)
+
+    rec1 = await CacheManager.create_record(db_session, f)
+    rec1_id = rec1.id
+
+    rec2 = await CacheManager.create_record(db_session, f)
+    assert rec2.id == rec1_id  # Same record updated
+    assert rec2.status == "cached"
+
+
+async def test_list_cache_records_paginated(db_session):
+    """GIVEN 5 cached files WHEN list_records THEN returns paginated results."""
+    ch = await _create_channel(db_session)
+    for i in range(5):
+        cache_path = f"{ch.id}/{i + 1}_test.dat"
+        await _touch_cache_file(cache_path, 1024)
+        f = await _create_file(db_session, ch.id, message_id=100 + i, is_cached=True, cache_path=cache_path, file_size=1024)
+        await CacheManager.create_record(db_session, f)
+
+    # Full list
+    records, total = await CacheManager.list_records(db_session, offset=0, limit=50)
+    assert total == 5
+    assert len(records) == 5
+
+    # Paginated
+    records2, total2 = await CacheManager.list_records(db_session, offset=0, limit=2)
+    assert total2 == 5
+    assert len(records2) == 2
+
+
+async def test_list_cache_records_empty(db_session):
+    """GIVEN no cache records WHEN list_records THEN empty list."""
+    records, total = await CacheManager.list_records(db_session)
+    assert records == []
+    assert total == 0
+
+
+async def test_delete_cache_record(db_session):
+    """GIVEN a cache record WHEN delete_record THEN disk file removed + DB entry deleted."""
+    ch = await _create_channel(db_session)
+    cache_path = f"{ch.id}/1_to_delete.dat"
+    full_path = await _touch_cache_file(cache_path, 1024)
+    f = await _create_file(db_session, ch.id, is_cached=True, cache_path=cache_path, file_size=1024)
+
+    rec = await CacheManager.create_record(db_session, f)
+    rec_id = rec.id
+
+    result = await CacheManager.delete_record(db_session, rec_id)
+    assert result is True
+
+    # Verify DB
+    deleted = await db_session.get(CacheRecordModel, rec_id)
+    assert deleted is None
+
+    # Verify File fields reset
+    await db_session.refresh(f)
+    assert f.is_cached is False
+    assert f.cache_path is None
+
+    # Verify disk file removed
+    assert not full_path.exists()
+
+
+async def test_delete_cache_record_not_found(db_session):
+    """GIVEN record_id doesn't exist WHEN delete_record THEN returns False."""
+    result = await CacheManager.delete_record(db_session, 999)
+    assert result is False
+
+
+async def test_delete_cache_record_missing_disk_file(db_session):
+    """GIVEN CacheRecord exists but disk file missing WHEN delete_record THEN succeeds."""
+    ch = await _create_channel(db_session)
+    cache_path = f"{ch.id}/1_missing.dat"
+    # Don't create disk file
+    f = await _create_file(db_session, ch.id, is_cached=True, cache_path=cache_path, file_size=1024)
+
+    rec = await CacheManager.create_record(db_session, f)
+    rec_id = rec.id
+
+    result = await CacheManager.delete_record(db_session, rec_id)
+    assert result is True
+
+    deleted = await db_session.get(CacheRecordModel, rec_id)
+    assert deleted is None
+
+
+async def test_evict_one_deletes_cache_record(db_session):
+    """GIVEN cached file with CacheRecord WHEN LRU evicted THEN CacheRecord deleted."""
+    await _set_config(db_session, "cache_max_size_mb", "10")
+    ch = await _create_channel(db_session)
+
+    now = datetime.now(timezone.utc)
+    cache_path = f"{ch.id}/1_evict_me.dat"
+    await _touch_cache_file(cache_path, 1024 * 1024)
+    f = await _create_file(
+        db_session, ch.id, message_id=101,
+        is_cached=True, cache_path=cache_path, file_size=1024 * 1024,
+        cached_at=now, accessed_at=now,
+    )
+    await CacheManager.create_record(db_session, f)
+
+    # Manually evict the file via check_and_evict with a file larger than limit
+    # Set limit to 0.5 MB so the 1MB file gets evicted
+    await _set_config(db_session, "cache_max_size_mb", "0")
+    # Directly call _evict_one to test CacheRecord cleanup
+    freed = await CacheManager._evict_one(db_session, f)
+
+    assert freed == 1024 * 1024
+
+    # CacheRecord should be gone
+    cr_q = select(CacheRecordModel).where(CacheRecordModel.file_id == f.id)
+    cr_result = await db_session.execute(cr_q)
+    cr = cr_result.scalar_one_or_none()
+    assert cr is None
+
+    # File.is_cached should be False
+    await db_session.refresh(f)
+    assert f.is_cached is False

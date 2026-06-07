@@ -17,7 +17,7 @@ from loguru import logger
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import File as FileModel
+from models import File as FileModel, CacheRecord as CacheRecordModel
 
 CACHE_DIR_STR = os.environ.get("TG_DATA_DIR", "./data")
 CACHE_DIR = Path(CACHE_DIR_STR) / "cache"
@@ -114,7 +114,14 @@ class CacheManager:
         file_.cache_path = None
         file_.is_cached = False
         file_.cached_at = None
-        # Keep accessed_at as historical record (don't clear it)
+
+        # Also delete CacheRecord if exists (direct query to avoid lazy-load)
+        cr_q = select(CacheRecordModel).where(CacheRecordModel.file_id == file_.id)
+        cr_result = await db.execute(cr_q)
+        cr = cr_result.scalar_one_or_none()
+        if cr:
+            await db.delete(cr)
+
         await db.commit()
 
         return freed
@@ -249,6 +256,107 @@ class CacheManager:
         """Update accessed_at timestamp for a cached file (LRU refresh)."""
         file_.accessed_at = datetime.now(timezone.utc)
         await db.commit()
+
+    @staticmethod
+    async def create_record(db: AsyncSession, file_: FileModel) -> CacheRecordModel:
+        """Create a CacheRecord for a cached file.
+        If a record already exists, update it.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Direct query to avoid lazy-load relationship issues
+        cr_q = select(CacheRecordModel).where(CacheRecordModel.file_id == file_.id)
+        cr_result = await db.execute(cr_q)
+        existing = cr_result.scalar_one_or_none()
+
+        if existing:
+            existing.file_path = file_.cache_path
+            existing.file_size = file_.file_size
+            existing.status = "cached"
+            existing.error_msg = None
+            existing.accessed_at = now
+            existing.cached_at = now
+            rec = existing
+        else:
+            rec = CacheRecordModel(
+                file_id=file_.id,
+                file_path=file_.cache_path,
+                file_size=file_.file_size,
+                status="cached",
+                cached_at=now,
+                accessed_at=now,
+            )
+            db.add(rec)
+        await db.commit()
+        await db.refresh(rec)
+        return rec
+
+    @staticmethod
+    async def list_records(
+        db: AsyncSession, offset: int = 0, limit: int = 50
+    ) -> tuple[list[dict], int]:
+        """List all cache records with file and channel info.
+
+        Returns (records_list, total_count).
+        """
+        from sqlalchemy.orm import joinedload
+
+        count_q = select(func.count(CacheRecordModel.id))
+        total = (await db.execute(count_q)).scalar() or 0
+
+        q = (
+            select(CacheRecordModel)
+            .options(joinedload(CacheRecordModel.file).joinedload(FileModel.channel))
+            .order_by(CacheRecordModel.cached_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await db.execute(q)).scalars().unique().all()
+
+        records = []
+        for cr in rows:
+            f = cr.file
+            records.append({
+                "id": cr.id,
+                "file_id": cr.file_id,
+                "file_name": f.file_name if f else "?",
+                "file_type": f.file_type if f else "?",
+                "channel_title": f.channel.title if f and f.channel else "?",
+                "file_size": cr.file_size,
+                "file_path": cr.file_path,
+                "status": cr.status,
+                "error_msg": cr.error_msg,
+                "cached_at": cr.cached_at.isoformat() if cr.cached_at else None,
+                "accessed_at": cr.accessed_at.isoformat() if cr.accessed_at else None,
+                "created_at": cr.created_at.isoformat() if cr.created_at else None,
+            })
+
+        return records, total
+
+    @staticmethod
+    async def delete_record(db: AsyncSession, record_id: int) -> bool:
+        """Delete a cache record: remove disk file + delete DB record.
+
+        Returns True if record existed and was deleted.
+        Returns False if record not found (idempotent).
+        """
+        rec = await db.get(CacheRecordModel, record_id)
+        if rec is None:
+            return False
+
+        # Delete disk file
+        if rec.file_path:
+            await CacheManager._delete_disk_file(rec.file_path)
+
+        # Also update File model fields
+        if rec.file:
+            rec.file.cache_path = None
+            rec.file.is_cached = False
+            rec.file.cached_at = None
+
+        await db.delete(rec)
+        await db.commit()
+        return True
 
     @staticmethod
     async def get_stats(db: AsyncSession) -> dict:

@@ -72,6 +72,97 @@
       </div>
     </div>
 
+    <!-- Cached files table -->
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
+      <div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300">缓存文件列表</h3>
+        <p class="text-xs text-gray-400">共 {{ recordsTotal }} 个文件</p>
+      </div>
+
+      <!-- Loading -->
+      <div v-if="recordsLoading" class="text-center text-gray-400 py-8 text-sm">加载中...</div>
+
+      <!-- Empty -->
+      <div v-else-if="records.length === 0" class="text-center text-gray-400 py-8 text-sm">
+        暂无缓存记录
+      </div>
+
+      <!-- Table -->
+      <div v-else class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+              <th class="py-3 px-4 font-medium">文件名</th>
+              <th class="py-3 px-4 font-medium">所属频道</th>
+              <th class="py-3 px-4 font-medium">大小</th>
+              <th class="py-3 px-4 font-medium">状态</th>
+              <th class="py-3 px-4 font-medium">缓存时间</th>
+              <th class="py-3 px-4 font-medium">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="rec in records"
+              :key="rec.id"
+              class="border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-700/30"
+            >
+              <td class="py-3 px-4 text-gray-800 dark:text-gray-200 max-w-[200px] truncate" :title="rec.file_name">
+                <router-link
+                  :to="`/files?channel=${rec.file_id ? rec.channel_id || '' : ''}`"
+                  class="hover:text-indigo-500 transition-colors"
+                >
+                  {{ rec.file_name }}
+                </router-link>
+              </td>
+              <td class="py-3 px-4 text-gray-500 dark:text-gray-400">{{ rec.channel_title }}</td>
+              <td class="py-3 px-4 text-gray-600 dark:text-gray-400">{{ formatSize(rec.file_size) }}</td>
+              <td class="py-3 px-4">
+                <span
+                  class="inline-block px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="statusClass(rec.status)"
+                >
+                  {{ statusLabel(rec.status) }}
+                </span>
+              </td>
+              <td class="py-3 px-4 text-gray-400 text-xs whitespace-nowrap">
+                {{ rec.cached_at ? formatTime(rec.cached_at) : '-' }}
+              </td>
+              <td class="py-3 px-4">
+                <button
+                  @click="handleDeleteRecord(rec)"
+                  :disabled="deletingRecords.has(rec.id)"
+                  class="px-2 py-1 text-xs bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400
+                         rounded hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors
+                         disabled:opacity-50"
+                >
+                  {{ deletingRecords.has(rec.id) ? '删除中...' : '删除' }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div v-if="recordsTotal > recordsLimit" class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
+        <button
+          @click="goRecordsPage(recordsPage - 1)"
+          :disabled="recordsPage <= 1"
+          class="px-3 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-600
+                 text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
+        >上一页</button>
+        <span class="text-xs text-gray-500 dark:text-gray-400">
+          第 {{ recordsPage }} / {{ recordsTotalPages }} 页
+        </span>
+        <button
+          @click="goRecordsPage(recordsPage + 1)"
+          :disabled="recordsPage >= recordsTotalPages"
+          class="px-3 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-600
+                 text-gray-600 dark:text-gray-300 disabled:opacity-30 hover:bg-gray-100 dark:hover:bg-gray-700"
+        >下一页</button>
+      </div>
+    </div>
+
     <div v-if="loading" class="text-center text-gray-400 py-8 text-sm">加载中...</div>
   </div>
 </template>
@@ -84,6 +175,16 @@ const loading = ref(true)
 const cacheStats = ref({})
 const evictLoading = ref(false)
 const evictResult = ref(null)
+
+// Records table
+const records = ref([])
+const recordsTotal = ref(0)
+const recordsPage = ref(1)
+const recordsLimit = ref(20)
+const recordsLoading = ref(false)
+const deletingRecords = ref(new Set())
+
+const recordsTotalPages = computed(() => Math.ceil(recordsTotal.value / recordsLimit.value))
 
 const usageColor = computed(() => {
   const pct = cacheStats.value.usage_percent || 0
@@ -99,6 +200,41 @@ const usageBarColor = computed(() => {
   return 'bg-green-500'
 })
 
+function formatSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let size = bytes
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024
+    i++
+  }
+  return size.toFixed(1) + ' ' + units[i]
+}
+
+function formatTime(iso) {
+  if (!iso) return '-'
+  return new Date(iso).toLocaleString()
+}
+
+function statusClass(status) {
+  const map = {
+    cached: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300',
+    caching: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+    failed: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+  }
+  return map[status] || 'bg-gray-100 text-gray-600'
+}
+
+function statusLabel(status) {
+  const map = {
+    cached: '已缓存',
+    caching: '缓存中',
+    failed: '失败',
+  }
+  return map[status] || status
+}
+
 async function loadStats() {
   try {
     const { data } = await cacheApi.stats()
@@ -110,6 +246,26 @@ async function loadStats() {
   }
 }
 
+async function loadRecords() {
+  recordsLoading.value = true
+  try {
+    const offset = (recordsPage.value - 1) * recordsLimit.value
+    const { data } = await cacheApi.records({ offset, limit: recordsLimit.value })
+    records.value = data.records
+    recordsTotal.value = data.total
+  } catch {
+    // handled by interceptor
+  } finally {
+    recordsLoading.value = false
+  }
+}
+
+function goRecordsPage(page) {
+  if (page < 1 || page > recordsTotalPages.value) return
+  recordsPage.value = page
+  loadRecords()
+}
+
 async function handleEvict() {
   evictLoading.value = true
   evictResult.value = null
@@ -117,6 +273,7 @@ async function handleEvict() {
     const { data } = await cacheApi.evict()
     evictResult.value = data
     await loadStats()
+    await loadRecords()
   } catch {
     // handled by interceptor
   } finally {
@@ -124,5 +281,25 @@ async function handleEvict() {
   }
 }
 
-onMounted(loadStats)
+async function handleDeleteRecord(rec) {
+  if (deletingRecords.value.has(rec.id)) return
+  deletingRecords.value.add(rec.id)
+  try {
+    await cacheApi.deleteRecord(rec.id)
+    window.dispatchEvent(new CustomEvent('app-toast', {
+      detail: { type: 'success', message: `已删除: ${rec.file_name}` },
+    }))
+    await loadRecords()
+    await loadStats()
+  } catch {
+    // handled by interceptor
+  } finally {
+    deletingRecords.value.delete(rec.id)
+  }
+}
+
+onMounted(() => {
+  loadStats()
+  loadRecords()
+})
 </script>

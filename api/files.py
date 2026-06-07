@@ -1,5 +1,6 @@
 """File management API routes: list, detail, download, view, cache."""
 
+import asyncio
 import os
 import re
 from datetime import datetime, timezone
@@ -12,10 +13,11 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import select, func, desc as sa_desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from api.utils import utc_iso
-from database import get_db
-from models import Channel as ChannelModel, File as FileModel
+from database import get_db, AsyncSessionLocal
+from models import Channel as ChannelModel, File as FileModel, CacheRecord as CacheRecordModel
 from services.telegram_client import get_telegram_service, AuthState
 
 router = APIRouter(tags=["files"])
@@ -49,7 +51,14 @@ def _make_content_disposition(filename: str, disposition: str = "inline") -> str
 
 
 def _file_to_dict(file_: FileModel) -> dict:
-    """Serialize a File ORM object to a JSON-safe dict."""
+    """Serialize a File ORM object to a JSON-safe dict.
+
+    Cache status is determined by CacheRecord (the authoritative source).
+    """
+    cr = file_.cache_record
+    is_caching = cr is not None and cr.status == "caching"
+    is_cached = cr is not None and cr.status == "cached"
+    is_failed = cr is not None and cr.status == "failed"
     return {
         "id": file_.id,
         "channel_id": file_.channel_id,
@@ -60,10 +69,12 @@ def _file_to_dict(file_: FileModel) -> dict:
         "file_type": file_.file_type,
         "thumb_path": file_.thumb_path,
         "thumb_type": file_.thumb_type,
-        "cache_path": file_.cache_path,
-        "is_cached": file_.is_cached,
-        "cached_at": utc_iso(file_.cached_at),
-        "accessed_at": utc_iso(file_.accessed_at),
+        "cache_path": cr.file_path if cr else file_.cache_path,
+        "is_cached": is_cached,
+        "is_caching": is_caching,
+        "cache_error": cr.error_msg if is_failed else None,
+        "cached_at": utc_iso(cr.cached_at if cr else file_.cached_at),
+        "accessed_at": utc_iso(cr.accessed_at if cr else file_.accessed_at),
         "tg_ref": file_.tg_ref,
         "created_at": utc_iso(file_.created_at),
     }
@@ -152,7 +163,7 @@ async def _ensure_cached(file_: FileModel, db: AsyncSession) -> Path:
        update DB with timestamps -> post-check overflow.
 
     Returns the full path to the cached file.
-    Updates file_ DB fields.
+    Updates file_ DB fields and creates/updates CacheRecord.
     """
     from services.cache_manager import CacheManager
 
@@ -194,6 +205,9 @@ async def _ensure_cached(file_: FileModel, db: AsyncSession) -> Path:
     file_.accessed_at = now
     await db.commit()
 
+    # Create/update CacheRecord
+    await CacheManager.create_record(db, file_)
+
     # Post-check: ensure cache is under limit (downloaded file may be
     # larger than estimated file_size, or concurrent downloads may have
     # pushed total over limit).
@@ -226,12 +240,13 @@ async def list_files(
     # Paginated query — newest first by message_id
     q = (
         select(FileModel)
+        .options(joinedload(FileModel.cache_record))
         .where(FileModel.channel_id == channel_id)
         .order_by(sa_desc(FileModel.message_id))
         .offset(offset)
         .limit(limit)
     )
-    files = (await db.execute(q)).scalars().all()
+    files = (await db.execute(q)).scalars().unique().all()
 
     return {
         "files": [_file_to_dict(f) for f in files],
@@ -247,7 +262,13 @@ async def list_files(
 @router.get("/api/files/{file_id}")
 async def get_file(file_id: int, db: AsyncSession = Depends(get_db)):
     """Get a single file's detail by its database ID."""
-    file_ = await db.get(FileModel, file_id)
+    q = (
+        select(FileModel)
+        .options(joinedload(FileModel.cache_record))
+        .where(FileModel.id == file_id)
+    )
+    result = await db.execute(q)
+    file_ = result.scalars().unique().one_or_none()
     if file_ is None:
         raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
     return _file_to_dict(file_)
@@ -259,7 +280,13 @@ async def get_file(file_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/api/files/{file_id}/download")
 async def download_file(file_id: int, db: AsyncSession = Depends(get_db)):
     """Stream-download a file (cache-first, fallback to Telegram)."""
-    file_ = await db.get(FileModel, file_id)
+    q = (
+        select(FileModel)
+        .options(joinedload(FileModel.cache_record))
+        .where(FileModel.id == file_id)
+    )
+    result = await db.execute(q)
+    file_ = result.scalars().unique().one_or_none()
     if file_ is None:
         raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
 
@@ -283,29 +310,192 @@ async def download_file(file_id: int, db: AsyncSession = Depends(get_db)):
 # ---------------------------------------------------------------------------
 @router.post("/api/files/{file_id}/cache")
 async def cache_file(file_id: int, db: AsyncSession = Depends(get_db)):
-    """Manually cache a file by downloading it from Telegram.
+    """Manually cache a file by downloading it from Telegram (async background).
 
-    Idempotent: does nothing if the file is already cached on disk.
+    - Creates a CacheRecord with status='caching'
+    - Launches background task to download
+    - Returns immediately with { status: 'caching' }
+    - When user re-visits, list_files reads the current CacheRecord status
     """
-    file_ = await db.get(FileModel, file_id)
+    q = (
+        select(FileModel)
+        .options(joinedload(FileModel.cache_record))
+        .where(FileModel.id == file_id)
+    )
+    result = await db.execute(q)
+    file_ = result.scalars().unique().one_or_none()
     if file_ is None:
         raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
 
-    # Already cached — return current state (idempotent)
-    if file_.is_cached and file_.cache_path:
+    cr = file_.cache_record
+
+    # Already fully cached — return current state (idempotent)
+    if cr and cr.status == "cached" and file_.cache_path:
         full_path = CACHE_DIR / file_.cache_path
         if full_path.exists():
             return _file_to_dict(file_)
 
-    # Download and cache
-    full_path = await _ensure_cached(file_, db)
-    logger.info(
-        "File cached: id={} path={} size={}",
-        file_.id,
-        file_.cache_path,
-        file_.file_size,
-    )
-    return _file_to_dict(file_)
+    # If a caching task is already running, don't start another
+    if cr and cr.status == "caching":
+        return _file_to_dict(file_)
+
+    # Create/update CacheRecord with status='caching'
+    _svc = _require_authorized()
+    now = datetime.now(timezone.utc)
+    if cr:
+        cr.status = "caching"
+        cr.error_msg = None
+    else:
+        cr = CacheRecordModel(
+            file_id=file_.id,
+            file_path="",
+            file_size=0,
+            status="caching",
+            cached_at=now,
+            accessed_at=now,
+        )
+        db.add(cr)
+    await db.commit()
+
+    # Launch background download task
+    asyncio.create_task(_background_cache(file_id))
+
+    # Manually construct response from current state (identity map may be stale)
+    return {
+        "id": file_.id,
+        "channel_id": file_.channel_id,
+        "message_id": file_.message_id,
+        "file_name": file_.file_name,
+        "file_size": file_.file_size,
+        "mime_type": file_.mime_type,
+        "file_type": file_.file_type,
+        "thumb_path": file_.thumb_path,
+        "thumb_type": file_.thumb_type,
+        "cache_path": None,
+        "is_cached": False,
+        "is_caching": True,
+        "cache_error": None,
+        "cached_at": None,
+        "accessed_at": None,
+        "tg_ref": file_.tg_ref,
+        "created_at": utc_iso(file_.created_at),
+    }
+
+
+async def _background_cache(file_id: int) -> None:
+    """Background task: download and cache a file, then update CacheRecord.
+
+    Runs in a separate session to avoid cross-request DB conflicts.
+    """
+    from services.cache_manager import CacheManager
+
+    try:
+        async with AsyncSessionLocal() as session:
+            # Reload file with cache_record in a fresh session
+            q = (
+                select(FileModel)
+                .options(joinedload(FileModel.cache_record))
+                .where(FileModel.id == file_id)
+            )
+            result = await session.execute(q)
+            file_ = result.scalars().unique().one_or_none()
+            if file_ is None:
+                logger.error("Background cache: file {} not found", file_id)
+                return
+
+            channel = await session.get(ChannelModel, file_.channel_id)
+            if channel is None:
+                logger.error("Background cache: channel not found for file {}", file_id)
+                return
+
+            # Pre-check cache space
+            if file_.file_size > 0:
+                try:
+                    await CacheManager.check_and_evict(
+                        session, new_file_size=file_.file_size, new_file_id=file_.id
+                    )
+                except HTTPException as e:
+                    logger.warning("Background cache pre-check failed: {}", e.detail)
+                    cr = file_.cache_record
+                    if cr:
+                        cr.status = "failed"
+                        cr.error_msg = e.detail
+                        await session.commit()
+                    return
+
+            safe_name = _safe_filename(file_.file_name)
+            relative_path = f"{file_.channel_id}/{file_.id}_{safe_name}"
+            full_path = CACHE_DIR / relative_path
+
+            # Download from Telegram
+            svc = _require_authorized()
+            try:
+                client = await svc.get_client()
+                entity = await client.get_entity(channel.tg_id)
+                message = await client.get_messages(entity, ids=file_.message_id)
+                if message is None or message.media is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Message id={file_.message_id} not found or has no media",
+                    )
+                full_path.parent.mkdir(parents=True, exist_ok=True)
+                path = await client.download_media(message, file=str(full_path))
+                if path is None:
+                    raise HTTPException(status_code=500, detail="Download returned None")
+                size = os.path.getsize(str(path))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("Background cache download failed: {}", e)
+                raise HTTPException(status_code=502, detail=str(e))
+
+            # Update File + CacheRecord
+            now = datetime.now(timezone.utc)
+            file_.cache_path = relative_path
+            file_.is_cached = True
+            file_.file_size = size
+            file_.cached_at = now
+            file_.accessed_at = now
+
+            cr = file_.cache_record
+            if cr:
+                cr.file_path = relative_path
+                cr.file_size = size
+                cr.status = "cached"
+                cr.error_msg = None
+                cr.cached_at = now
+                cr.accessed_at = now
+
+            await session.commit()
+
+            # Post-download overflow check
+            try:
+                await CacheManager.post_download_check(session)
+            except HTTPException as e:
+                logger.warning("Background cache post-check: {}", e.detail)
+
+            logger.info("Background cache completed: id={} path={} size={}", file_id, relative_path, size)
+
+    except HTTPException as e:
+        # Update CacheRecord to failed
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await session.execute(
+                    select(FileModel)
+                    .options(joinedload(FileModel.cache_record))
+                    .where(FileModel.id == file_id)
+                )
+                file_ = result.scalars().unique().one_or_none()
+                if file_ and file_.cache_record:
+                    file_.cache_record.status = "failed"
+                    file_.cache_record.error_msg = e.detail
+                    await session.commit()
+        except Exception:
+            logger.exception("Failed to mark cache_record as failed")
+        logger.error("Background cache failed: id={} error={}", file_id, e.detail)
+
+    except Exception as e:
+        logger.exception("Background cache unexpected error: id={}", file_id)
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +533,13 @@ async def view_file(file_id: int, db: AsyncSession = Depends(get_db)):
     Unlike /download (which forces attachment), this endpoint allows the
     browser to render the file inline (image, video, audio, PDF, etc.).
     """
-    file_ = await db.get(FileModel, file_id)
+    q = (
+        select(FileModel)
+        .options(joinedload(FileModel.cache_record))
+        .where(FileModel.id == file_id)
+    )
+    result = await db.execute(q)
+    file_ = result.scalars().unique().one_or_none()
     if file_ is None:
         raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
 
@@ -419,8 +615,15 @@ async def delete_cache(file_id: int, db: AsyncSession = Depends(get_db)):
     """Clear the local cache for a file.
 
     Idempotent: succeeds even if the file is not currently cached.
+    Removes CacheRecord + disk file + resets File fields.
     """
-    file_ = await db.get(FileModel, file_id)
+    q = (
+        select(FileModel)
+        .options(joinedload(FileModel.cache_record))
+        .where(FileModel.id == file_id)
+    )
+    result = await db.execute(q)
+    file_ = result.scalars().unique().one_or_none()
     if file_ is None:
         raise HTTPException(status_code=404, detail=f"File with id={file_id} not found")
 
@@ -434,9 +637,14 @@ async def delete_cache(file_id: int, db: AsyncSession = Depends(get_db)):
             except OSError as e:
                 logger.warning("Failed to delete cache file {}: {}", full_path, e)
 
+    # Delete CacheRecord (if any)
+    if file_.cache_record:
+        await db.delete(file_.cache_record)
+
     # Reset DB fields
     file_.cache_path = None
     file_.is_cached = False
+    file_.cached_at = None
     await db.commit()
 
     return {"status": "ok", "detail": f"Cache for file id={file_id} cleared"}

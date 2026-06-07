@@ -1,6 +1,30 @@
 # 开发日志 (CHANGELOG)
 
-## fix: handleCache 以服务端 is_cached 为准，不硬编码 true
+## feat(step-cache): CacheRecord 三态异步缓存
+
+### 变更
+
+| 文件 | 变更 |
+|------|------|
+| `models.py` | 新增 `CacheRecord` 表（含 status、error_msg）；`File` 加 `cache_record` 关系 |
+| `services/cache_manager.py` | 新增 `create_record`、`list_records`、`delete_record`；`_evict_one` 同步删 `CacheRecord` |
+| `api/files.py` | POST /cache 改为异步：创建 status=caching → asyncio.create_task → 返回；DELETE 删 CacheRecord；`_file_to_dict` 从 CacheRecord 读取状态；`list_files` 加 `joinedload` |
+| `api/cache.py` | 新增 `GET /cache/records`（分页含状态）和 `DELETE /cache/records/{id}` |
+| `frontend/src/views/FilesView.vue` | 三态卡片样式（未缓存/缓存中/已缓存）+ 灰绿红徽章 + 操作区三态切换 |
+| `frontend/src/views/CacheView.vue` | 新增缓存文件表格（分页、status 列、删除操作） |
+| `frontend/src/api/index.js` | 新增 cacheApi.records / deleteRecord |
+| 测试文件 | 后端新增 CacheRecord 测试；前端新增三态/表格测试 |
+
+### 关键设计决策
+
+- **三态异步模型**：CreateRecord(status='caching')→asyncio.create_task→后台下载→更新status='cached'/'failed'
+- **权威来源**：_file_to_dict 从 CacheRecord（joinedload）读状态，不依赖 File.is_cached 字段
+- **状态持久化**：缓存中离开再回来，list_files 实时查询 CacheRecord，仍显示「缓存中」
+- **CacheManager 兼容**：聚合查询（get_stats 等）继续用 File.is_cached（同步保持）
+
+### 测试统计: 210/210 PASS ✅ (后端) + 76/76 PASS ✅ (前端)
+
+---
 
 ### 变更
 

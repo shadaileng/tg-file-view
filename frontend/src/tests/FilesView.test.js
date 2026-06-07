@@ -33,6 +33,8 @@ function makeFiles(count, startId = 1) {
     file_size: 1024,
     mime_type: 'image/jpeg',
     is_cached: false,
+    is_caching: false,
+    cache_error: null,
   }))
 }
 
@@ -54,8 +56,8 @@ describe('FilesView', () => {
     mockFilesList.mockResolvedValue({
       data: {
         files: [
-          { id: 1, file_name: 'photo.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false },
-          { id: 2, file_name: 'doc.pdf', file_type: 'document', file_size: 2048, mime_type: 'application/pdf', is_cached: true, thumb_path: 'thumb.jpg' },
+          { id: 1, file_name: 'photo.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false, is_caching: false, cache_error: null },
+          { id: 2, file_name: 'doc.pdf', file_type: 'document', file_size: 2048, mime_type: 'application/pdf', is_cached: true, is_caching: false, cache_error: null, thumb_path: 'thumb.jpg' },
         ],
         total: 2,
       },
@@ -66,7 +68,7 @@ describe('FilesView', () => {
     await chBtn[0].trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('photo.jpg')
-    expect(wrapper.text()).toContain('已缓存')
+    expect(wrapper.text()).toContain('✓ 缓存中')
   })
 
   it('无频道时提示选择频道', async () => {
@@ -225,7 +227,7 @@ describe('FilesView', () => {
     mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
     mockFilesList.mockResolvedValue({
       data: {
-        files: [{ id: 42, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false }],
+        files: [{ id: 42, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false, is_caching: false, cache_error: null }],
         total: 1,
       },
     })
@@ -245,7 +247,7 @@ describe('FilesView', () => {
     mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
     mockFilesList.mockResolvedValue({
       data: {
-        files: [{ id: 5, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false }],
+        files: [{ id: 5, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false, is_caching: false, cache_error: null }],
         total: 1,
       },
     })
@@ -268,8 +270,8 @@ describe('FilesView', () => {
     expect(disabledBtn.length).toBeGreaterThan(0)
     expect(disabledBtn[0].attributes('disabled')).toBeDefined()
 
-    // Resolve — return proper backend response shape { data: { is_cached: true } }
-    resolveCache({ data: { is_cached: true } })
+    // Resolve — return proper backend response shape { data: { is_cached: true, is_caching: false } }
+    resolveCache({ data: { is_cached: true, is_caching: false, cache_error: null } })
     await flushPromises()
     expect(mockCache).toHaveBeenCalledWith(5)
   })
@@ -278,7 +280,7 @@ describe('FilesView', () => {
     mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
     mockFilesList.mockResolvedValue({
       data: {
-        files: [{ id: 6, file_name: 'test2.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: true }],
+        files: [{ id: 6, file_name: 'test2.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: true, is_caching: false, cache_error: null }],
         total: 1,
       },
     })
@@ -305,7 +307,7 @@ describe('FilesView', () => {
     mockChannelsList.mockResolvedValue({ data: [{ id: 1, title: 'Ch1', file_count: 10 }] })
     mockFilesList.mockResolvedValue({
       data: {
-        files: [{ id: 7, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false }],
+        files: [{ id: 7, file_name: 'test.jpg', file_type: 'photo', file_size: 1024, mime_type: 'image/jpeg', is_cached: false, is_caching: false, cache_error: null }],
         total: 1,
       },
     })

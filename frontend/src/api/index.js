@@ -69,6 +69,8 @@ export const thumbnailsApi = {
 export const cacheApi = {
   stats: () => api.get('/cache/stats'),
   evict: () => api.post('/cache/evict'),
+  records: (params = {}) => api.get('/cache/records', { params }),
+  deleteRecord: (id) => api.delete(`/cache/records/${id}`),
 }
 
 // --- Config ---

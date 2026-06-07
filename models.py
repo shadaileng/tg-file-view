@@ -19,6 +19,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
 
+_CACHE_STATUSES = ("caching", "cached", "failed")
+
 
 class Channel(Base):
     """Telegram channel metadata."""
@@ -58,10 +60,33 @@ class File(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     channel = relationship("Channel", back_populates="files")
+    cache_record = relationship("CacheRecord", back_populates="file", uselist=False, cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("channel_id", "message_id", name="uq_channel_message"),
     )
+
+
+class CacheRecord(Base):
+    """Individual cache entry — one per cached file.
+
+    Status machine:
+      caching → cached (success)
+      caching → failed  (error)
+    """
+    __tablename__ = "cache_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    file_id: Mapped[int] = mapped_column(Integer, ForeignKey("files.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    file_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="caching")  # caching, cached, failed
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    file = relationship("File", back_populates="cache_record")
 
 
 class SyncTask(Base):

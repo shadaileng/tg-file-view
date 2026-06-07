@@ -378,7 +378,23 @@ it('测试示例', async () => {
 
 ## 9. 场景登记表
 
-### S — 文件浏览无限滚动 + 混合翻页 + 流式预览
+### S2 — CacheRecord 三态异步缓存
+
+| # | 类型 | GIVEN | WHEN | THEN |
+|---|------|-------|------|------|
+| C1 | 正常流程 | 文件未缓存，手机缓存端有空间 | 用户点击「缓存」 | POST /cache 立即返回 `{status:'caching'}`，后台开始下载；前端显示灰色徽章「⏳ 缓存中」 |
+| C2 | 正常流程 | 文件正在后台缓存中（status=caching） | 用户离开文件页再回来 | list_files joinedload CacheRecord → status=caching → 仍显示「⏳ 缓存中」 |
+| C3 | 正常流程 | 后台缓存任务完成 | 下载成功后更新 status=cached | 下次 list_files → status=cached → 卡片变绿 + 显示「清缓存」按钮 |
+| C4 | 正常流程 | 文件已缓存 | 用户点击「清缓存」 | 删除 CacheRecord + 磁盘文件，is_cached=false，回到初始态 |
+| C5 | 正常流程 | 文件已缓存后离开再回来 | list_files 重新加载 | joinedload CacheRecord → status=cached → 绿底绿边框 +「清缓存」 |
+| C6 | 边界条件 | 文件被 LRU 淘汰后 | 离开再回来 | CacheRecord 已被删除 → is_cached=false → 白底灰边框 +「缓存」按钮 |
+| C7 | 异常流程 | 后台缓存下载失败 | 异常处理 | CacheRecord.status='failed' + error_msg → 前端红底 +「重试」 |
+| C8 | 异常流程 | 缓存文件已存在磁盘但 CacheRecord 缺失 | list_files 查询 | CacheRecord 不存在 → is_cached=false → 显示「缓存」（幂等修复） |
+| C9 | 正常流程 | 缓存管理页有多个缓存文件 | 用户打开缓存管理 | GET /cache/records 分页列表含 status、文件名、频道、大小、时间 |
+| C10 | 正常流程 | 缓存管理页某文件不再需要 | 点击「删除」 | DELETE /cache/records/{id} → 清除磁盘+DB，列表刷新 |
+| C11 | 边界条件 | 缓存管理页删除正在后台缓存的记录 | 删除一个 status=caching 的记录 | 删除成功，磁盘文件若已存在则清理，后台任务写 DB 时因 FK 级联自动忽略 |
+
+### S1 — 文件浏览无限滚动 + 混合翻页 + 流式预览
 
 | # | 类型 | GIVEN | WHEN | THEN |
 |---|------|-------|------|------|

@@ -1,6 +1,7 @@
 """Tests for file management API (Step 4)."""
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -17,7 +18,7 @@ from api.files import (
     _safe_filename,
     CACHE_DIR,
 )
-from models import Channel as ChannelModel, File as FileModel
+from models import Channel as ChannelModel, File as FileModel, CacheRecord as CacheRecordModel
 from services.telegram_client import (
     get_telegram_service,
     set_telegram_service,
@@ -158,38 +159,24 @@ async def test_get_file_not_found(db_session):
 # ---------------------------------------------------------------------------
 async def test_cache_file(db_session):
     """GIVEN file is_cached=false,Telegram authorized
-    WHEN POST /cache THEN is_cached=true, cache_path set."""
+    WHEN POST /cache THEN returns is_caching=true, CacheRecord created."""
     ch = await _create_channel(db_session, tg_id=123456789)
     f = await _create_file(db_session, ch.id, is_cached=False, cache_path=None)
 
-    # We mock at the _download_from_telegram level using patch
-    with patch("api.files._download_from_telegram") as mock_dl:
-        # Make _download_from_telegram write a placeholder file and return size
-        async def _fake_dl(svc, tg_id, message_id, target_path):
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_bytes(b"fake content")
-            return 12  # 12 bytes
+    svc = await _mock_authorized_service()
+    result = await cache_file(file_id=f.id, db=db_session)
 
-        mock_dl.side_effect = _fake_dl
+    # New async behavior: creates CacheRecord(status='caching'), returns immediately
+    assert result["is_caching"] is True
+    assert result["is_cached"] is False
+    assert result["cache_error"] is None
 
-        svc = await _mock_authorized_service()
-        result = await cache_file(file_id=f.id, db=db_session)
-
-    assert result["is_cached"] is True
-    assert result["cache_path"] is not None
-    assert "test_file.pdf" in result["cache_path"]
-
-    # Verify DB state
-    await db_session.refresh(f)
-    assert f.is_cached is True
-    assert f.cache_path is not None
-    assert f.file_size == 12
-
-    # Cleanup
-    if f.cache_path:
-        full = CACHE_DIR / f.cache_path
-        if full.exists():
-            os.remove(str(full))
+    # Verify CacheRecord was created
+    db_q = select(CacheRecordModel).where(CacheRecordModel.file_id == f.id)
+    cr_result = await db_session.execute(db_q)
+    cr = cr_result.scalar_one_or_none()
+    assert cr is not None
+    assert cr.status == "caching"
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +212,8 @@ async def test_cache_file_not_found(db_session):
 # S10 — Edge: 幂等缓存（已缓存再次缓存）
 # ---------------------------------------------------------------------------
 async def test_cache_file_already_cached(db_session):
-    """GIVEN file already cached on disk WHEN POST /cache THEN 200, no re-download."""
+    """GIVEN file already cached on disk with CacheRecord
+    WHEN POST /cache THEN 200, no re-download."""
     ch = await _create_channel(db_session)
     # Create a real cached file on disk
     cache_rel = f"{ch.id}/999_test_cached.pdf"
@@ -238,6 +226,19 @@ async def test_cache_file_already_cached(db_session):
         is_cached=True,
         cache_path=cache_rel,
     )
+
+    # Create CacheRecord (required for "already cached" detection)
+    now = datetime.now(timezone.utc)
+    cr = CacheRecordModel(
+        file_id=f.id,
+        file_path=cache_rel,
+        file_size=12,
+        status="cached",
+        cached_at=now,
+        accessed_at=now,
+    )
+    db_session.add(cr)
+    await db_session.commit()
 
     svc = await _mock_authorized_service()
     # The download mock should NOT be called since file is already cached

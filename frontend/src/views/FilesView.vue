@@ -74,8 +74,14 @@
         <div
           v-for="file in files"
           :key="file.id"
-          class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700
-                 overflow-hidden hover:shadow-md transition-shadow group"
+          :class="[
+            'rounded-xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow group',
+            file.is_cached
+              ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/10'
+              : file.is_caching
+                ? 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/50'
+                : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'
+          ]"
         >
           <!-- Thumbnail -->
           <div class="relative">
@@ -97,12 +103,24 @@
               <span class="text-3xl text-gray-400">{{ fileIcon(file.file_type) }}</span>
             </div>
 
-            <!-- Cache badge -->
+            <!-- Cache badge: three states -->
             <span
-              v-if="file.is_cached"
-              class="absolute top-2 right-2 px-2 py-0.5 text-xs bg-green-500 text-white rounded-full"
+              v-if="file.is_caching"
+              class="absolute top-2 right-2 px-2 py-0.5 text-xs bg-gray-400 text-white rounded-full font-semibold"
             >
-              已缓存
+              ⏳ 缓存中
+            </span>
+            <span
+              v-else-if="file.is_cached"
+              class="absolute top-2 right-2 px-2 py-0.5 text-xs bg-green-500 text-white rounded-full font-semibold shadow-sm"
+            >
+              ✓ 缓存中
+            </span>
+            <span
+              v-else-if="file.cache_error"
+              class="absolute top-2 right-2 px-2 py-0.5 text-xs bg-red-500 text-white rounded-full font-semibold"
+            >
+              ✗ 失败
             </span>
           </div>
 
@@ -117,7 +135,7 @@
             </div>
           </div>
 
-          <!-- Actions -->
+          <!-- Actions: three-state -->
           <div class="px-3 pb-3 flex gap-1">
             <button
               @click="handleView(file)"
@@ -135,35 +153,63 @@
             >
               下载
             </button>
-            <button
-              @click="handleCache(file)"
-              v-if="!file.is_cached"
-              :disabled="processingFiles.has(file.id)"
-              class="flex-1 px-2 py-1.5 text-xs bg-green-50 dark:bg-green-900/20
-                     text-green-600 dark:text-green-400 rounded
-                     transition-colors"
-              :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'"
+
+            <!-- State 1: not cached — show cache button -->
+            <template v-if="!file.is_cached && !file.is_caching && !file.cache_error">
+              <button
+                @click="handleCache(file)"
+                :disabled="processingFiles.has(file.id)"
+                class="flex-1 px-2 py-1.5 text-xs bg-green-50 dark:bg-green-900/20
+                       text-green-600 dark:text-green-400 rounded transition-colors"
+                :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'"
+              >
+                <template v-if="processingFiles.has(file.id)">缓存中...</template>
+                <template v-else>缓存</template>
+              </button>
+            </template>
+
+            <!-- State 2: caching in background — show disabled label -->
+            <span
+              v-else-if="file.is_caching"
+              class="flex-1 px-2 py-1.5 text-xs text-center text-gray-500 dark:text-gray-400
+                     bg-gray-100 dark:bg-gray-700 rounded font-medium"
             >
-              {{ processingFiles.has(file.id) ? '缓存中...' : '缓存' }}
-            </button>
+              ⏳ 缓存中
+            </span>
+
+            <!-- State 3: cached — show clear-cache button -->
             <button
+              v-else-if="file.is_cached"
               @click="handleDeleteCache(file)"
-              v-if="file.is_cached"
               :disabled="processingFiles.has(file.id)"
               class="flex-1 px-2 py-1.5 text-xs bg-red-50 dark:bg-red-900/20
-                     text-red-600 dark:text-red-400 rounded
-                     transition-colors"
+                     text-red-600 dark:text-red-400 rounded transition-colors"
               :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-100 dark:hover:bg-red-900/30'"
             >
-              {{ processingFiles.has(file.id) ? '清缓存中...' : '清缓存' }}
+              <template v-if="processingFiles.has(file.id)">清缓存中...</template>
+              <template v-else>清缓存</template>
             </button>
+
+            <!-- State 4: failed — show retry button -->
+            <button
+              v-else-if="file.cache_error"
+              @click="handleCache(file)"
+              :disabled="processingFiles.has(file.id)"
+              class="flex-1 px-2 py-1.5 text-xs bg-red-50 dark:bg-red-900/20
+                     text-red-600 dark:text-red-400 rounded transition-colors"
+              :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-red-100 dark:hover:bg-red-900/30'"
+            >
+              <template v-if="processingFiles.has(file.id)">重试中...</template>
+              <template v-else>重试</template>
+            </button>
+
             <button
               @click="handleGenerateThumb(file)"
               v-if="!file.thumb_path"
               :disabled="processingFiles.has(file.id)"
               class="flex-1 px-2 py-1.5 text-xs bg-amber-50 dark:bg-amber-900/20
                      text-amber-600 dark:text-amber-400 rounded
-                     transition-colors"
+                      transition-colors"
               :class="processingFiles.has(file.id) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-amber-100 dark:hover:bg-amber-900/30'"
             >
               {{ processingFiles.has(file.id) ? '生成中...' : '缩略图' }}
@@ -437,6 +483,8 @@ async function handleCache(file) {
   try {
     const { data } = await filesApi.cache(file.id)
     file.is_cached = data.is_cached
+    file.is_caching = data.is_caching
+    file.cache_error = data.cache_error
   } catch {
     // handled by interceptor
   } finally {
@@ -450,6 +498,8 @@ async function handleDeleteCache(file) {
   try {
     await filesApi.deleteCache(file.id)
     file.is_cached = false
+    file.is_caching = false
+    file.cache_error = null
   } catch {
     // handled by interceptor
   } finally {
